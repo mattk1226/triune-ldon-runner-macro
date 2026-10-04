@@ -1,0 +1,953 @@
+| ldon.mac - LDoN adventure loop for the Triune emu server
+| Usage: /mac ldon <camp> [skip]
+|   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
+|         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
+|   skip: already have an adventure and standing at the recruiter,
+|         so don't request one on the first loop
+| Start in the camp's zone. Every zone the loop passes through needs a navmesh.
+| Zone crossings are built in (see Sub BuiltInRoute).
+
+#turbo 40
+#event AdvWon "#*#You have successfully completed your adventure#*#"
+#event Slain  "#*#You have been slain#*#"
+
+Sub Main(string a1, string a2)
+    | ================= GENERAL CONFIG =================
+    | Optional safety check: put a character name here and the macro will only
+    | run on that character. Leave it empty to run on any character.
+    /declare CharName     string outer
+
+    | Adventure window dropdowns, counting from the top (1 = first entry)
+    /declare RiskIndex    int    outer 2
+    /declare TypeIndex    int    outer 3
+
+    | Triune auto combat puller
+    /declare PullerModeCmd   string outer /ac puller
+    /declare PullerOnCmd     string outer /ac run
+    | stops chasing new mobs but keeps fighting what's already on me
+    /declare PullerManualCmd string outer /ac manual
+    | only sent once combat is completely over
+    /declare PullerOffCmd    string outer /ac stop
+    /declare MaxClearTime string outer 90m
+
+    | "Bazaar and Back" AA, and the map switch in the Bazaar
+    /declare BazaarAAID   int    outer 331
+    /declare MapY         float  outer -646.5
+    /declare MapX         float  outer 2.9
+    /declare MapZ         float  outer 4.8
+    /declare MapSwitchID  int    outer 146
+    | ==================================================
+
+    | Per-camp settings, filled in by SetCamp below
+    /declare CampZone     string outer
+    /declare QuestNPC     string outer
+    /declare HasCampSpot  bool   outer FALSE
+    /declare CampY        float  outer 0
+    /declare CampX        float  outer 0
+    /declare CampZ        float  outer 0
+    /declare Ent1Zone     string outer
+    /declare Ent1Path     string outer none
+    /declare Ent1Y        float  outer 0
+    /declare Ent1X        float  outer 0
+    /declare Ent1Z        string outer none
+    /declare Ent1Door     int    outer 0
+    /declare MagusSay     string outer none
+    /declare MagusName    string outer Magus
+    /declare HasMagusExit bool   outer FALSE
+    /declare MagusExitY   float  outer 0
+    /declare MagusExitX   float  outer 0
+    /declare Ent2Names    string outer none
+    /declare Ent2Zone     string outer
+    /declare Ent2Path     string outer none
+    /declare Ent2Y        float  outer 0
+    /declare Ent2X        float  outer 0
+    /declare Ent2Z        string outer none
+    /declare Ent2Door     int    outer 0
+    /declare MapContinent int    outer 0
+    /declare MapWaypoint  string outer none
+    /declare MapRow       int    outer 0
+    /declare LandZone     string outer
+    /declare ReturnPath   string outer none
+    /declare RetMagusSay  string outer none
+    /declare RetMagusName string outer Magus
+
+    | Route data, filled in by LoadRoute
+    /declare PathFile string outer ldon_paths.ini
+    /declare RP[300]  string outer
+    /declare RCount   int    outer 0
+    /declare RZoned   int    outer 0
+    /declare RZone    string outer none
+    /declare RHeading float  outer 0
+    /declare RLastZ   string outer NONE
+    /declare RBuiltIn bool   outer FALSE
+    /declare Camp     string outer sro
+    /declare SkipGet  bool   outer FALSE
+    /declare UseEnt2  bool   outer FALSE
+    /declare AdvWon   bool   outer FALSE
+    /declare Missing  int    outer 0
+    /declare Runs     int    outer 0
+
+    | a missing argument can arrive as an empty value, so only use real ones
+    /if (${Defined[a1]}) {
+        /if (${a1.Length} && ${a1.NotEqual[NULL]}) /call ParseArg ${a1}
+    }
+    /if (${Defined[a2]}) {
+        /if (${a2.Length} && ${a2.NotEqual[NULL]}) /call ParseArg ${a2}
+    }
+    /call SetCamp
+
+    | ---------- startup checks ----------
+    /if (${CharName.Length}) {
+        /if (${Me.Name.NotEqual[${CharName}]}) {
+            /echo This macro is set up for ${CharName}. Ending.
+            /endmacro
+        }
+    }
+    /if (${MapWaypoint.Equal[none]}) {
+        /echo The return trip for camp [${Camp}] isn't set up yet (map waypoint, landing zone, path back). Ending.
+        /endmacro
+    }
+    | with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
+    /if (${MagusSay.Equal[none]}) /call CheckPath ${CampZone} ${Ent1Path}
+    /if (${Ent2Names.NotEqual[none]}) /call CheckPath ${CampZone} ${Ent2Path}
+    /call CheckPath ${LandZone} ${ReturnPath}
+    /if (${Missing}) {
+        /echo ${Missing} zone crossing(s) missing for camp [${Camp}]. Ending.
+        /endmacro
+    }
+    /echo Running camp [${Camp}] with recruiter ${QuestNPC}.
+
+    | ---------- where am I starting? ----------
+    /if (${Zone.ShortName.Equal[bazaar]}) {
+        /echo Starting in the Bazaar: taking the map and heading to camp.
+        /call MapPort
+        /call ReturnToCamp
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /if (${Zone.ShortName.Equal[${LandZone}]} || ${ReturnPath.Find[${Zone.ShortName}]}) {
+            /echo Starting in ${Zone.ShortName}: heading to camp.
+            /call ReturnToCamp
+        }
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /echo Starting in ${Zone.ShortName}: going to the Bazaar, then to camp.
+        /call LeaveDungeon
+        /call ReturnToCamp
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
+        /endmacro
+    }
+
+    :mainloop
+        /if (${SkipGet}) {
+            /echo Skipping the adventure request for this loop (assuming the first entrance).
+            /varset UseEnt2 FALSE
+        } else {
+            /call GetAdventure
+        }
+        /varset SkipGet FALSE
+        /if (${HasCampSpot}) /call LeaveCamp
+        /if (${UseEnt2}) {
+            /call TravelPath ${Ent2Path}
+        } else {
+            /if (${MagusSay.NotEqual[none]}) /call UseMagus out
+            | does nothing if the Magus already put us in the entrance zone
+            /call TravelPath ${Ent1Path}
+        }
+        /call EnterDungeon
+        /call ClearDungeon
+        /call LeaveDungeon
+        /call ReturnToCamp
+        /varcalc Runs ${Runs}+1
+        /echo Finished run #${Runs}
+    /goto :mainloop
+/return
+
+| ---------------------------------------------------------
+Sub ParseArg(string a)
+    /if (!${Defined[a]}) /return
+    /if (!${a.Length} || ${a.Equal[NULL]}) /return
+    /if (${a.Equal[skip]}) {
+        /varset SkipGet TRUE
+    } else {
+        /varset Camp ${a}
+    }
+/return
+
+| ---------------------------------------------------------
+| ================= PER-CAMP CONFIG =================
+| Paths are zone short names in travel order, separated by |  (none = same zone)
+| Ent2 is only used when the adventure's name is in Ent2Names.
+| MapRow, if set, picks the waypoint by its position in the list instead of by name.
+| MagusSay, if set, is said to the camp's Magus to port to the first entrance's zone.
+| RetMagusSay, if set, is said to the Magus in the landing zone to port to the camp.
+| An entrance Z of none means "let nav work out the height".
+| An entrance Door is the switch ID to click (0 = nearest switch).
+Sub SetCamp
+    /if (${Camp.Equal[sro]}) {
+        | Deepest Guk
+        /varset CampZone     sro
+        /varset QuestNPC     Kallei Ribblok
+        /varset HasCampSpot  TRUE
+        /varset CampY        -1497.2
+        /varset CampX        998.3
+        /varset CampZ        -23.2
+        /varset Ent1Zone     guktop
+        /varset Ent1Path     innothule|guktop
+        /varset Ent1Y        438.1
+        /varset Ent1X        224.2
+        /varset Ent1Z        -9.2
+        /varset Ent2Names    Cauldron of Lost Souls
+        /varset Ent2Zone     innothule
+        /varset Ent2Path     innothule
+        /varset Ent2Y        1353
+        /varset Ent2X        1186
+        /varset MapContinent 1
+        /varset MapWaypoint  Grobb
+        /varset LandZone     grobb
+        /varset ReturnPath   innothule|sro
+        /return
+    }
+    /if (${Camp.Equal[ep]}) {
+        | Miragul's Menagerie - both entrances are in Everfrost itself
+        /varset CampZone     everfrost
+        /varset QuestNPC     Mannis McGuyett
+        /varset Ent1Zone     everfrost
+        /varset Ent1Y        -828
+        /varset Ent1X        -5458
+        /varset Ent2Names    Hushed Banquet|Heart of the Menagerie
+        /varset Ent2Zone     everfrost
+        /varset Ent2Y        2771
+        /varset Ent2X        -4725
+        | GUESS - confirm the Everfrost waypoint lands in Everfrost Peaks
+        /varset MapContinent 1
+        /varset MapWaypoint  Everfrost
+        /varset LandZone     everfrost
+        /return
+    }
+    /if (${Camp.Equal[bm]}) {
+        | Mistmoore's Catacombs - entrances are in Lesser Faydark
+        /varset CampZone     butcher
+        /varset QuestNPC     Xyzelauna
+        /varset Ent1Zone     lfaydark
+        /varset Ent1Path     gfaydark|lfaydark
+        /varset Ent1Y        -759.1
+        /varset Ent1X        3832.8
+        /varset Ent1Z        2.5
+        /varset Ent1Door     7
+        /varset Ent2Names    Dreary Grotto|Cesspits of Putrescence
+        /varset Ent2Zone     lfaydark
+        /varset Ent2Path     gfaydark|lfaydark
+        /varset Ent2Y        -111.0
+        /varset Ent2X        3861.8
+        /varset Ent2Z        -39.6
+        /varset Ent2Door     10
+        | Trip back: East Commonlands waypoint, then the Magus there ports to this camp
+        /varset MapContinent 1
+        /varset MapWaypoint  East Commonlands
+        /varset LandZone     ecommons
+        /varset RetMagusSay  Butcherblock
+        /varset RetMagusName Magus Zeir
+        /return
+    }
+    /if (${Camp.Equal[ec]}) {
+        | Rujarkian Hills - entrance is in South Ro
+        /varset CampZone     ecommons
+        /varset QuestNPC     Periac Windfell
+        /varset Ent1Zone     sro
+        /varset Ent1Path     nro|oasis|sro
+        | Shortcut: say this to the Magus at the camp to port to the entrance zone.
+        | To go back to running Ent1Path, put a | at the start of the next line.
+        /varset MagusSay     South Ro
+        /varset MagusName    Magus Zeir
+        | after the port, walk straight to this clear spot before using nav (tents)
+        /varset HasMagusExit TRUE
+        /varset MagusExitY   -1458.2
+        /varset MagusExitX   1069.9
+        /varset Ent1Y        -2111.9
+        /varset Ent1X        1331.6
+        /varset Ent1Z        -68.3
+        | switch 1 = RUJPORTAL701 (switch 6, HUT1, is just a hut next to it)
+        /varset Ent1Door     1
+        | Antonica, the "East Commonlands" waypoint (found by name)
+        /varset MapContinent 1
+        /varset MapWaypoint  East Commonlands
+        /varset LandZone     ecommons
+        /return
+    }
+    /if (${Camp.Equal[nro]}) {
+        | Takish-Hiz - entrance is in North Ro itself
+        /varset CampZone     nro
+        /varset QuestNPC     Escon Quickbow
+        /varset Ent1Zone     nro
+        /varset Ent1Y        -956.2
+        /varset Ent1X        119.7
+        /varset Ent1Z        -61.4
+        /varset Ent1Door     3
+        | Trip back: East Commonlands waypoint, then the Magus there ports to this camp
+        /varset MapContinent 1
+        /varset MapWaypoint  East Commonlands
+        /varset LandZone     ecommons
+        /varset RetMagusSay  North Ro
+        /varset RetMagusName Magus Zeir
+        /return
+    }
+    /echo Unknown camp [${Camp}]. Use one of: sro ep bm ec nro
+    /endmacro
+/return
+
+| ---------------------------------------------------------
+| Report any zone crossing on this path that hasn't been recorded
+Sub CheckPath(string fromZone, string path)
+    /if (${path.Equal[none]}) /return
+    /declare i    int    local 1
+    /declare prev string local ${fromZone}
+    /declare z    string local
+    :hop
+    /varset z ${path.Arg[${i},|]}
+    /if (${z.Length} && ${z.NotEqual[NULL]}) {
+        /call LoadRoute ${prev}_to_${z}
+        /if (${RCount}<2) {
+            /echo Missing zone crossing: ${prev}_to_${z} is not built in (see Sub BuiltInRoute).
+            /varcalc Missing ${Missing}+1
+        }
+        /varset prev ${z}
+        /varcalc i ${i}+1
+        /goto :hop
+    }
+/return
+
+| ---------------------------------------------------------
+| Travel through a list of zones, one crossing at a time
+Sub TravelPath(string path)
+    /if (${path.Equal[none]}) /return
+    /declare i     int    local 1
+    /declare first int    local 1
+    /declare z     string local
+
+    | if I'm already in one of the zones on the path, continue from there
+    :find
+    /varset z ${path.Arg[${i},|]}
+    /if (${z.Length} && ${z.NotEqual[NULL]}) {
+        /if (${Zone.ShortName.Equal[${z}]}) /varcalc first ${i}+1
+        /varcalc i ${i}+1
+        /goto :find
+    }
+
+    /varset i ${first}
+    :hop
+    /varset z ${path.Arg[${i},|]}
+    /if (${z.Length} && ${z.NotEqual[NULL]}) {
+        /call RunRoute ${Zone.ShortName}_to_${z}
+        /varcalc i ${i}+1
+        /goto :hop
+    }
+/return
+    /declare i int    local 1
+    /declare z string local
+    :hop
+    /varset z ${path.Arg[${i},|]}
+    /if (${z.Length} && ${z.NotEqual[NULL]}) {
+        /if (${Zone.ShortName.NotEqual[${z}]}) /call RunRoute ${Zone.ShortName}_to_${z}
+        /varcalc i ${i}+1
+        /goto :hop
+    }
+/return
+
+| ---------------------------------------------------------
+| Load a route into RP[] / RCount / RZone / RZoned / RHeading / RLastZ.
+| Built-in routes come first; anything else is read from ldon_paths.ini if present.
+Sub LoadRoute(string route)
+    /declare i int local 1
+    /varset RCount   0
+    /varset RBuiltIn FALSE
+    /call BuiltInRoute ${route}
+    /if (${RCount}) /return
+
+    /varset RCount   ${Ini[${PathFile},${route},Count,0]}
+    /if (${RCount}>300) /varset RCount 300
+    /varset RZoned   ${Ini[${PathFile},${route},Zoned,0]}
+    /varset RZone    ${Ini[${PathFile},${route},Zone,none]}
+    /varset RHeading ${Ini[${PathFile},${route},Heading,0]}
+    /varset RLastZ   ${Ini[${PathFile},${route},LastZ,NONE]}
+    :load
+    /if (${i}<=${RCount}) {
+        /varset RP[${i}] ${Ini[${PathFile},${route},${i}]}
+        /varcalc i ${i}+1
+        /goto :load
+    }
+/return
+
+| ---------------------------------------------------------
+| ================= BUILT-IN ZONE CROSSINGS =================
+| Taken from recorded runs: the last few points before the
+| zone line, the height there, and the heading used to run across.
+| To change one, edit its points, height and heading here.
+Sub BuiltInRoute(string route)
+    /if (${route.Equal[sro_to_innothule]}) {
+        /varset RZone    sro
+        /varset RZoned   1
+        /varset RHeading 114.95
+        /varset RLastZ   -23.05
+        /varset RCount   6
+        /varset RP[1] -3105.89 1089.84
+        /varset RP[2] -3134.52 1059.16
+        /varset RP[3] -3174.04 1043.41
+        /varset RP[4] -3204.04 1070.45
+        /varset RP[5] -3197.69 1113.27
+        /varset RP[6] -3200.11 1134.10
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[innothule_to_guktop]}) {
+        /varset RZone    innothule
+        /varset RZoned   1
+        /varset RHeading 235.41
+        /varset RLastZ   -7.73
+        /varset RCount   4
+        /varset RP[1] 185.05 -714.98
+        /varset RP[2] 176.92 -755.63
+        /varset RP[3] 170.92 -797.48
+        /varset RP[4] 138.19 -828.50
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[grobb_to_innothule]}) {
+        /varset RZone    grobb
+        /varset RZoned   1
+        /varset RHeading 180.77
+        /varset RLastZ   3.75
+        /varset RCount   3
+        /varset RP[1] -94.77 8.86
+        /varset RP[2] -108.73 46.68
+        /varset RP[3] -135.05 55.18
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[innothule_to_sro]}) {
+        /varset RZone    innothule
+        /varset RZoned   1
+        /varset RHeading 321.73
+        /varset RLastZ   -23.77
+        /varset RCount   6
+        /varset RP[1] 2425.42 1012.50
+        /varset RP[2] 2450.89 1047.76
+        /varset RP[3] 2475.87 1082.32
+        /varset RP[4] 2501.13 1118.18
+        /varset RP[5] 2524.97 1152.06
+        /varset RP[6] 2567.59 1137.51
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[kaladima_to_butcher]}) {
+        /varset RZone    kaladima
+        /varset RZoned   1
+        /varset RHeading 170.86
+        /varset RLastZ   3.75
+        /varset RCount   6
+        /varset RP[1] 101.04 9.52
+        /varset RP[2] 58.81 6.92
+        /varset RP[3] 15.22 4.23
+        /varset RP[4] -27.14 1.63
+        /varset RP[5] -51.81 35.02
+        /varset RP[6] -76.47 46.18
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[butcher_to_gfaydark]}) {
+        /varset RZone    butcher
+        /varset RZoned   1
+        /varset RHeading 246.08
+        /varset RLastZ   3.75
+        /varset RCount   6
+        /varset RP[1] -1151.15 -3056.88
+        /varset RP[2] -1183.39 -3083.84
+        /varset RP[3] -1225.25 -3082.91
+        /varset RP[4] -1262.50 -3063.90
+        /varset RP[5] -1305.25 -3065.52
+        /varset RP[6] -1325.96 -3082.54
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[ecommons_to_nro]}) {
+        /varset RZone    ecommons
+        /varset RZoned   1
+        /varset RHeading 261.66
+        /varset RLastZ   3.75
+        /varset RCount   6
+        /varset RP[1] -2366.93 34.29
+        /varset RP[2] -2390.62 -0.83
+        /varset RP[3] -2413.88 -38.29
+        /varset RP[4] -2429.27 -77.48
+        /varset RP[5] -2439.50 -119.63
+        /varset RP[6] -2446.03 -155.41
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[nro_to_oasis]}) {
+        /varset RZone    nro
+        /varset RZoned   1
+        /varset RHeading 185.99
+        /varset RLastZ   31.54
+        /varset RCount   5
+        /varset RP[1] -1737.07 974.34
+        /varset RP[2] -1781.35 965.01
+        /varset RP[3] -1821.81 958.58
+        /varset RP[4] -1864.33 954.29
+        /varset RP[5] -1886.70 952.09
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[oasis_to_sro]}) {
+        /varset RZone    oasis
+        /varset RZoned   1
+        /varset RHeading 178.72
+        /varset RLastZ   6.15
+        /varset RCount   2
+        /varset RP[1] -1895.63 201.02
+        /varset RP[2] -1903.72 201.22
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[gfaydark_to_lfaydark]}) {
+        /varset RZone    gfaydark
+        /varset RZoned   1
+        /varset RHeading 169.77
+        /varset RLastZ   3.75
+        /varset RCount   6
+        /varset RP[1] -2475.47 -983.32
+        /varset RP[2] -2508.90 -1011.15
+        /varset RP[3] -2544.38 -1033.92
+        /varset RP[4] -2577.02 -1061.64
+        /varset RP[5] -2595.93 -1098.98
+        /varset RP[6] -2626.51 -1109.55
+        /varset RBuiltIn TRUE
+        /return
+    }
+/return
+
+| ---------------------------------------------------------
+| Travel one recorded route
+Sub RunRoute(string route)
+    /declare startZone int   local ${Zone.ID}
+    /declare i         int   local 1
+    /declare wy        float local 0
+    /declare wx        float local 0
+    /declare t         timer local 0
+
+    /call LoadRoute ${route}
+    /if (${RCount}<2) {
+        /echo Zone crossing [${route}] is not built in (see Sub BuiltInRoute). Ending.
+        /endmacro
+    }
+    /if (${RZone.NotEqual[${Zone.ShortName}]}) {
+        /echo Route [${route}] starts in ${RZone} but I'm in ${Zone.ShortName}. Ending.
+        /endmacro
+    }
+    /if (${RBuiltIn} && !${Navigation.MeshLoaded}) {
+        /echo Route [${route}] needs a navmesh for ${Zone.ShortName}, and none is loaded. Ending.
+        /endmacro
+    }
+    /echo Running route [${route}]
+
+    | With a mesh, nav to the recorded zone line. If nav can't path to the
+    | very last point (it is often just off the mesh), fall back to an
+    | earlier recorded point and walk the rest.
+    /if (${RZoned} && ${Navigation.MeshLoaded}) {
+        /varset i ${RCount}
+        :trynav
+        /varset wy ${RP[${i}].Arg[1]}
+        /varset wx ${RP[${i}].Arg[2]}
+        /if (${i}==${RCount} && ${RLastZ.NotEqual[NONE]}) {
+            /nav locyxz ${wy} ${wx} ${RLastZ}
+        } else {
+            /nav locyx ${wy} ${wx}
+        }
+        /delay 2s
+        /if (!${Navigation.Active} && ${Zone.ID}==${startZone} && ${Math.Distance[${wy},${wx}]}>40) {
+            /varcalc i ${i}-1
+            /if (${i}>=1 && ${i}>=${RCount}-10) /goto :trynav
+            /echo Nav can't path to the end of route [${route}]. Re-record it, or check this zone's mesh. Ending.
+            /endmacro
+        }
+        /if (${i}<${RCount}) /echo Nav is using point ${i} of ${RCount}, walking the rest.
+        /delay 15m (!${Navigation.Active} || ${Zone.ID}!=${startZone})
+        /if (${Zone.ID}!=${startZone}) /goto :arrived
+        /if (${Math.Distance[${wy},${wx}]}>40) {
+            /echo Nav stopped before reaching the zone line for [${route}]. Ending.
+            /endmacro
+        }
+        /varcalc i ${i}+1
+        /if (${i}>${RCount}) /goto :cross
+    }
+
+    :nextpoint
+        /varset wy ${RP[${i}].Arg[1]}
+        /varset wx ${RP[${i}].Arg[2]}
+        /moveto loc ${wy} ${wx}
+        /varset t 30s
+        :wait
+            /if (${Zone.ID}!=${startZone}) /goto :arrived
+            /delay 1
+        /if (${Math.Distance[${wy},${wx}]}>12 && ${t}) /goto :wait
+        /if (${Math.Distance[${wy},${wx}]}>12) {
+            /moveto off
+            /echo Stuck on route [${route}] at point ${i}. Ending.
+            /endmacro
+        }
+        /varcalc i ${i}+1
+    /if (${i}<=${RCount}) /goto :nextpoint
+
+    :cross
+    /moveto off
+    /if (${RZoned}) {
+        | keep running the way you were facing until the zone line takes us
+        /face fast heading ${RHeading}
+        /keypress forward hold
+        /delay 20s ${Zone.ID}!=${startZone}
+        /keypress forward
+        /if (${Zone.ID}==${startZone}) {
+            /echo Route [${route}] finished but I didn't zone. Ending.
+            /endmacro
+        }
+    }
+    :arrived
+    /if (${RZoned}) /delay 5s
+/return
+
+| ---------------------------------------------------------
+Sub GetAdventure
+    /declare npcID int    local ${Spawn[npc ${QuestNPC}].ID}
+    /declare i     int    local 1
+    /declare nm    string local
+    /if (!${npcID}) {
+        /echo Can't find ${QuestNPC}. Ending.
+        /endmacro
+    }
+    /if (${HasCampSpot}) {
+        | come in through the clear spot, then walk straight to the NPC
+        /if (${Spawn[id ${npcID}].Distance}>80 && ${Navigation.MeshLoaded}) {
+            /nav locyxz ${CampY} ${CampX} ${CampZ}
+            /delay 1s
+            /delay 5m !${Navigation.Active}
+        }
+        /moveto id ${npcID}
+        /delay 1s
+        /delay 30s ${MoveTo.Stopped}
+    } else {
+        /if (${Spawn[id ${npcID}].Distance}>15) {
+            /nav id ${npcID}
+            /delay 1s
+            /delay 5m !${Navigation.Active}
+        }
+    }
+    /if (${Spawn[id ${npcID}].Distance}>30) {
+        /echo Couldn't get to ${QuestNPC}. Ending.
+        /endmacro
+    }
+    /target id ${npcID}
+    /delay 2s ${Target.ID}==${npcID}
+    /face fast
+
+    /click right target
+    /delay 5s ${Window[AdventureRequestWnd].Open}
+    /if (!${Window[AdventureRequestWnd].Open}) {
+        /echo Adventure window didn't open. Ending.
+        /endmacro
+    }
+    /notify AdventureRequestWnd AdvRqst_RiskCombobox listselect ${RiskIndex}
+    /delay 5
+    /notify AdventureRequestWnd AdvRqst_TypeCombobox listselect ${TypeIndex}
+    /delay 5
+    /notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup
+    /delay 10s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+    /delay 5
+
+    | Which entrance does this adventure use?
+    /varset UseEnt2 FALSE
+    /if (${Ent2Names.NotEqual[none]}) {
+        :names
+        /varset nm ${Ent2Names.Arg[${i},|]}
+        /if (${nm.Length} && ${nm.NotEqual[NULL]}) {
+            /if (${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text.Find[${nm}]}) /varset UseEnt2 TRUE
+            /varcalc i ${i}+1
+            /goto :names
+        }
+    }
+    /if (${UseEnt2}) /echo This adventure uses the second entrance.
+
+    /notify AdventureRequestWnd AdvRqst_AcceptButton leftmouseup
+    /delay 2s
+/return
+
+| ---------------------------------------------------------
+| From the landing zone back to the camp: run the return path, then use
+| the Magus if this camp's trip back needs one
+Sub ReturnToCamp
+    /call TravelPath ${ReturnPath}
+    /if (${RetMagusSay.NotEqual[none]} && ${Zone.ShortName.NotEqual[${CampZone}]}) /call UseMagus ret
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /echo Couldn't get back to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
+        /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+| Port by talking to a Magus
+| which = out (camp -> entrance zone) or ret (landing zone -> camp)
+Sub UseMagus(string which)
+    /declare phrase    string local ${MagusSay}
+    /declare mname     string local ${MagusName}
+    /if (${which.Equal[ret]}) {
+        /varset phrase ${RetMagusSay}
+        /varset mname  ${RetMagusName}
+    }
+    /declare mid       int    local ${NearestSpawn[npc ${mname}].ID}
+    /declare startZone string local ${Zone.ShortName}
+    /declare t         timer  local 0
+    | if the named Magus isn't here, use whichever Magus is closest
+    /if (!${mid}) /varset mid ${NearestSpawn[npc Magus].ID}
+    /if (!${mid}) {
+        /echo No Magus found in ${Zone.ShortName}.
+        /return
+    }
+    /if (${Spawn[id ${mid}].Distance}>15) {
+        /nav id ${mid}
+        /delay 1s
+        /delay 3m !${Navigation.Active}
+    }
+    /target id ${mid}
+    /delay 2s ${Target.ID}==${mid}
+    /face fast
+    /delay 5
+    /say ${phrase}
+    /delay 30s ${Zone.ShortName.NotEqual[${startZone}]}
+    /delay 5s
+    /if (${Zone.ShortName.Equal[${startZone}]}) {
+        /echo The Magus didn't port me.
+        /return
+    }
+    | walk straight out of the arrival camp before nav takes over
+    /if (${HasMagusExit} && ${which.Equal[out]}) {
+        /varset t 30s
+        /moveto loc ${MagusExitY} ${MagusExitX}
+        :wait
+            /delay 2
+        /if (${Math.Distance[${MagusExitY},${MagusExitX}]}>15 && ${t}) /goto :wait
+        /moveto off
+        /if (${Math.Distance[${MagusExitY},${MagusExitX}]}>15) /echo Didn't reach the clear spot after the port, trying nav from here.
+    }
+/return
+
+| ---------------------------------------------------------
+| Walk straight from the NPC to the clear spot outside the camp
+Sub LeaveCamp
+    /declare t timer local 30s
+    /moveto loc ${CampY} ${CampX}
+    :wait
+        /delay 2
+    /if (${Math.Distance[${CampY},${CampX}]}>15 && ${t}) /goto :wait
+    /moveto off
+    /if (${Math.Distance[${CampY},${CampX}]}>15) {
+        /echo Couldn't reach the spot outside the camp. Ending.
+        /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+Sub EnterDungeon
+    /declare startZone string local ${Zone.ShortName}
+    /declare tries     int    local 0
+    /declare ez        string local ${Ent1Zone}
+    /declare ey        float  local ${Ent1Y}
+    /declare ex        float  local ${Ent1X}
+    /declare ezz       string local ${Ent1Z}
+    /declare edoor     int    local ${Ent1Door}
+    /if (${UseEnt2}) {
+        /varset edoor ${Ent2Door}
+        /varset ez  ${Ent2Zone}
+        /varset ey  ${Ent2Y}
+        /varset ex  ${Ent2X}
+        /varset ezz ${Ent2Z}
+    }
+
+    /if (${Zone.ShortName.NotEqual[${ez}]}) {
+        /echo The entrance is in ${ez} but I'm in ${Zone.ShortName}. Ending.
+        /endmacro
+    }
+    /if (!${Navigation.MeshLoaded}) {
+        /echo No navmesh for ${Zone.ShortName}, can't get to the entrance. Ending.
+        /endmacro
+    }
+    /if (${ezz.Equal[none]}) {
+        /nav locyx ${ey} ${ex}
+    } else {
+        /nav locyxz ${ey} ${ex} ${ezz}
+    }
+    /delay 1s
+    /delay 10m !${Navigation.Active}
+    /if (${Math.Distance[${ey},${ex}]}>40) {
+        /echo Couldn't reach the dungeon entrance. Ending.
+        /endmacro
+    }
+
+    :clickloop
+        | use the entrance's switch ID if the camp gives one, otherwise the nearest switch
+        /if (${edoor}) {
+            /doortarget id ${edoor}
+        } else {
+            /doortarget
+        }
+        /delay 5
+        | walk up to the switch if it's out of click range
+        /if (${DoorTarget.Distance}>15) {
+            /moveto loc ${DoorTarget.Y} ${DoorTarget.X}
+            /delay 10s ${DoorTarget.Distance}<15
+            /moveto off
+        }
+        /face fast door
+        /delay 3
+        /click left door
+        /delay 20s ${Zone.ShortName.NotEqual[${startZone}]}
+        /varcalc tries ${tries}+1
+    /if (${Zone.ShortName.Equal[${startZone}]} && ${tries}<3) /goto :clickloop
+
+    /if (${Zone.ShortName.Equal[${startZone}]}) {
+        /echo Couldn't enter the dungeon. Ending.
+        /endmacro
+    }
+    /delay 5s
+/return
+
+| ---------------------------------------------------------
+Sub ClearDungeon
+    /declare clearTimer timer local ${MaxClearTime}
+    /declare calm       int   local 0
+    /declare fightTimer timer local 0
+    /varset AdvWon FALSE
+    /docommand ${PullerModeCmd}
+    /delay 1s
+    /docommand ${PullerOnCmd}
+
+    :clearloop
+        /doevents
+        /delay 1s
+    /if (!${AdvWon} && ${clearTimer}) /goto :clearloop
+
+    /if (!${AdvWon}) /echo Timed out without a win message, leaving anyway.
+
+    | stop pulling, but keep fighting whatever is still on me
+    /docommand ${PullerManualCmd}
+
+    | wait until I've been out of combat for 5 seconds straight
+    /varset fightTimer 10m
+    :fightloop
+        /if (${Me.CombatState.Equal[COMBAT]}) {
+            /varset calm 0
+        } else {
+            /varcalc calm ${calm}+1
+        }
+        /delay 1s
+    /if (${calm}<5 && ${fightTimer}) /goto :fightloop
+    /if (${calm}<5) {
+        /echo Still in combat 10 minutes after the adventure ended. Ending here so I don't port out mid-fight.
+        /endmacro
+    }
+
+    /docommand ${PullerOffCmd}
+    /delay 2s
+/return
+
+| ---------------------------------------------------------
+Sub LeaveDungeon
+    /declare startZone string local ${Zone.ShortName}
+
+    | Bazaar AA
+    /delay 3m ${Me.AltAbilityReady[${BazaarAAID}]}
+    /alt activate ${BazaarAAID}
+    /delay 60s ${Zone.ShortName.Equal[bazaar]}
+    /delay 5s
+    /if (${Zone.ShortName.NotEqual[bazaar]}) {
+        /echo Bazaar and Back didn't take me to the Bazaar. Ending.
+        /endmacro
+    }
+    /call MapPort
+/return
+
+| ---------------------------------------------------------
+| In the Bazaar: walk to the map and port to this camp's waypoint
+Sub MapPort
+    /declare row   int local 0
+    /declare tries int local 0
+
+    | Walk to the map. The landing spot is random, so try nav, and if it
+    | can't start from here, step toward the map and try again.
+    :mapwalk
+    /if (${Math.Distance[${MapY},${MapX}]}>15 && ${tries}<15) {
+        /varcalc tries ${tries}+1
+        /if (${Navigation.MeshLoaded}) {
+            /nav locyxz ${MapY} ${MapX} ${MapZ}
+            /delay 1s
+            /if (${Navigation.Active}) {
+                /delay 3m !${Navigation.Active}
+                /goto :mapwalk
+            }
+        }
+        /moveto loc ${MapY} ${MapX}
+        /delay 4s ${Math.Distance[${MapY},${MapX}]}<15
+        /moveto off
+        /goto :mapwalk
+    }
+    /if (${Math.Distance[${MapY},${MapX}]}>25) {
+        /echo Couldn't get to the map from here. Ending.
+        /endmacro
+    }
+
+    | Click the map and pick this camp's waypoint
+    /doortarget id ${MapSwitchID}
+    /delay 5
+    /face fast door
+    /click left door
+    /delay 5s ${Window[WaypointsWnd].Open}
+    /if (!${Window[WaypointsWnd].Open}) {
+        /echo The map window didn't open. Ending.
+        /endmacro
+    }
+    /notify WaypointsWnd ContinentsList listselect ${MapContinent}
+    /delay 1s
+    | a camp can give the row number directly; otherwise look the waypoint up by name
+    /if (${MapRow}) {
+        /varset row ${MapRow}
+    } else {
+        /varset row ${Window[WaypointsWnd].Child[WaypointsList].List[=${MapWaypoint}]}
+    }
+    /if (!${row}) {
+        /echo Couldn't find ${MapWaypoint} in the waypoint list. Ending.
+        /endmacro
+    }
+    /notify WaypointsWnd WaypointsList listselect ${row}
+    /delay 5
+    /notify WaypointsWnd SelectedWaypointButton leftmouseup
+    /delay 2s
+    | answer a confirmation box if one pops up
+    /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup
+    /if (${Window[LargeDialogWindow].Open}) /notify LargeDialogWindow LDW_YesButton leftmouseup
+    /delay 60s ${Zone.ShortName.Equal[${LandZone}]}
+    /delay 5s
+
+    /if (${Zone.ShortName.NotEqual[${LandZone}]}) {
+        /echo Expected to land in ${LandZone} but I'm in ${Zone.ShortName}. Ending.
+        /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+Sub Event_AdvWon
+    /varset AdvWon TRUE
+/return
+
+Sub Event_Slain
+    /echo Died on run #${Runs}. Ending.
+    /endmacro
+/return

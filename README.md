@@ -1,2 +1,106 @@
-# triune-ldon-runner-macro
-Runs LDoN automagically.
+# ldon.mac
+
+A MacroQuest macro that runs Lost Dungeons of Norrath adventures in a loop on the Triune emu server. It requests an adventure (high difficulty), travels to the dungeon entrance, runs the TAC as puller until the adventure completes, leaves through the Bazaar, and returns to the camp for the next one.
+
+It was built and tested on MacroQuest emu-rof2 v3.1.4.13. Use it at your own risk, stay at the keyboard for your first loops, and check the server rules on unattended play before leaving it running.
+
+## Requirements
+
+- MacroQuest with the **MQ2Nav** and **MQ2MoveUtils** plugins loaded
+- A navmesh for every zone the camp passes through (see "Meshes" below)
+- The **Bazaar and Back** AA (alt activate 331)
+- The destination waypoints unlocked on the Bazaar map
+- The Triune auto combat commands (`/ac puller`, `/ac run`, `/ac manual`, `/ac stop`)
+
+MQ2EasyFind's `/travelto` is not used. It can't route between these zones on this server.
+
+## Install
+
+Copy `ldon.mac` into your MacroQuest `Macros` folder.
+
+## Usage
+
+```
+/mac ldon <camp> [skip]
+```
+
+| Camp | Theme | Camp zone | Recruiter |
+|---|---|---|---|
+| `sro` | Deepest Guk | South Ro | Kallei Ribblok |
+| `ep` | Miragul's Menagerie | Everfrost | Mannis McGuyett |
+| `bm` | Mistmoore's Catacombs | Butcherblock | Xyzelauna Tu`Valzir |
+| `ec` | The Rujarkian Hills | East Commonlands | Periac Windfell |
+| `nro` | Takish-Hiz | North Ro | Escon Quickbow |
+
+With no camp given, it uses `sro`.
+
+`skip` is for when you already hold an adventure and are standing at the recruiter. It skips the request on the first loop only.
+
+You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
+
+THIS ASSUMES YOUR BAZAAR AND BACK TAKES YOU TO THE BAZAAR
+
+Type `/endmacro` to stop it.
+
+## What one loop does
+
+1. Walks to the recruiter, sets Risk and Type in the adventure window, requests and accepts.
+2. Travels to the entrance zone. The `ec` camp uses the Magus port to South Ro.
+3. Navs to the portal and clicks it.
+4. Runs `/ac puller` and `/ac run`, then waits for "You have successfully completed your adventure".
+5. Runs `/ac manual`, waits until combat has been over for five seconds, then `/ac stop`.
+6. Uses Bazaar and Back, walks to the map, and ports to the camp's waypoint.
+7. Returns to the camp. The `bm` and `nro` camps port to East Commonlands and use Magus Zeir.
+
+## Settings
+
+General settings are at the top of `Sub Main` in `ldon.mac`:
+
+- `CharName`: optional. Set it to restrict the macro to one character.
+- `RiskIndex` and `TypeIndex`: positions in the adventure window dropdowns. The defaults are 2 (High) and 3 (Mob Count).
+- `MaxClearTime`: how long to wait for the adventure to complete before leaving anyway.
+
+Per-camp settings (recruiter, portal location and switch ID, waypoint, Magus phrases) are in `Sub SetCamp`.
+
+## Meshes
+
+The stock mesh pack is built for live-server zones and does not match several classic zones on this server. If nav refuses to path or runs into walls, build a mesh from your own game files:
+
+1. Download `MQ2Nav-1.3.3.157-Live.zip` from the MQ2Nav releases page: <https://github.com/brainiac/MQ2Nav/releases/tag/1.3.3.157>
+2. Unzip it to its own folder. Do not copy its `MQ2Nav.dll` into MacroQuest.
+3. Run `MeshGenerator.exe`, point it at your EverQuest folder, open the zone, Build, Save.
+4. Copy the `.navmesh` file into `resources\MQ2Nav` in your MacroQuest folder and type `/nav reload` in game.
+
+Zones used:
+
+| Camp | Zones |
+|---|---|
+| All | `bazaar` |
+| `sro` | `sro`, `innothule`, `guktop`, `grobb` |
+| `ep` | `everfrost` |
+| `bm` | `ecommons`, `butcher`, `gfaydark`, `lfaydark` |
+| `ec` | `ecommons`, `sro` (plus `nro`, `oasis` if the Magus port fails) |
+| `nro` | `ecommons`, `nro` |
+
+## Zone crossings
+
+The zone lines the macro crosses are built into `ldon.mac` (see `Sub BuiltInRoute`), so there is nothing to record or set up. Each one needs a navmesh for its zone, since nav does the pathing up to the zone line.
+
+## Status and known gaps
+
+- `sro` and `ec` have been run in game.
+- `nro` is fully configured, but a complete loop hasn't been confirmed yet.
+- `bm`: the two zone crossings (Butcherblock to Greater Faydark to Lesser Faydark) and the portal selection are untested.
+- `ep`: portal locations are approximate (no height or switch ID), and it is untested.
+- Camps with two portals (`sro`, `ep`, `bm`) choose the portal by reading the adventure text. That check is unconfirmed, so for now the macro may always go to the first portal. On an adventure that uses the second one, it will stop at the entrance.
+- Some South Ro tents are missing from the navmesh, so the macro walks through fixed clear spots near the camp. If your character snags there, rebuild the South Ro mesh or adjust the `Camp` and `MagusExit` locations in `Sub SetCamp`.
+- This assumes your bazaar and back takes you to the bazaar and not EC.
+
+## Troubleshooting
+
+When the macro stops, it prints the reason. Common ones:
+
+- **"Route [...] needs a navmesh"**: build or install the mesh for that zone.
+- **"Nav can't path to the end of route"**: the mesh doesn't match the zone. Rebuild it.
+- **"Couldn't enter the dungeon"**: no active adventure for that portal, or the adventure uses the camp's other portal.
+- **"Couldn't find ... in the waypoint list"**: that waypoint isn't unlocked on your Bazaar map.
