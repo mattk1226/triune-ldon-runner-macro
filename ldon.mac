@@ -639,6 +639,7 @@ Sub GetAdventure
     /declare npcID int    local ${Spawn[npc ${QuestNPC}].ID}
     /declare i     int    local 1
     /declare nm    string local
+    /declare tries int    local 0
     /if (!${npcID}) {
         /echo Can't find ${QuestNPC}. Ending.
         /endmacro
@@ -678,8 +679,23 @@ Sub GetAdventure
     /delay 5
     /notify AdventureRequestWnd AdvRqst_TypeCombobox listselect ${TypeIndex}
     /delay 5
+    | The Accept button only lights up when the server offers an adventure.
+    | On an error (already have one, not eligible, ...) the server puts the
+    | reason in the window text and Accept stays greyed out, so retry a couple
+    | of times and then stop instead of travelling without an adventure.
+    :request
+    /varcalc tries ${tries}+1
     /notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup
     /delay 10s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+    /if (!${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}) {
+        /echo Adventure request ${tries} of 3 was refused: ${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text}
+        /if (${tries}<3) {
+            /delay 5s
+            /goto :request
+        }
+        /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
+        /endmacro
+    }
     /delay 5
 
     | Which entrance does this adventure use?
@@ -695,7 +711,19 @@ Sub GetAdventure
     }
     /if (${UseEnt2}) /echo This adventure uses the second entrance.
 
+    | Accept, and check it took: the button greys out (or the window closes)
+    | once the adventure is ours
+    /varset tries 0
+    :accept
+    /varcalc tries ${tries}+1
     /notify AdventureRequestWnd AdvRqst_AcceptButton leftmouseup
+    /delay 5s (!${Window[AdventureRequestWnd].Open} || !${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled})
+    /if (${Window[AdventureRequestWnd].Open} && ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}) {
+        /if (${tries}<2) /goto :accept
+        /echo Accepted the adventure but the window didn't confirm it: ${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text} Ending.
+        /endmacro
+    }
+    /echo Adventure accepted.
     /delay 2s
 /return
 

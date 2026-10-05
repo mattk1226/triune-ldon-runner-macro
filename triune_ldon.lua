@@ -421,6 +421,14 @@ end
 -- ============================================================================
 local function camp() return CAMPS[settings.camp] end
 
+local function npcText()
+    local text = tlo(function()
+        return mq.TLO.Window('AdventureRequestWnd').Child('AdvRqst_NPCText').Text()
+    end, '') or ''
+    if text == '' then return '(no text in the adventure window)' end
+    return text
+end
+
 local function getAdventure()
     local c = camp()
     setStep('Requesting adventure from %s', c.questNPC)
@@ -455,26 +463,53 @@ local function getAdventure()
     sleep(500)
     mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
     sleep(500)
-    mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
-    waitFor(10000, function()
+
+    -- The Accept button only lights up when the server offers an adventure.
+    -- On an error (already have one, not eligible, ...) the server puts the
+    -- reason in the window text and Accept stays greyed out, so retry a couple
+    -- of times and then stop instead of travelling without an adventure.
+    local function acceptEnabled()
         return mq.TLO.Window('AdventureRequestWnd').Child('AdvRqst_AcceptButton').Enabled()
-    end)
+    end
+    local offered = false
+    for attempt = 1, 3 do
+        mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
+        if waitFor(10000, acceptEnabled) then
+            offered = true
+            break
+        end
+        log('Adventure request %d of 3 was refused: %s', attempt, npcText())
+        if attempt < 3 then sleep(5000) end
+    end
+    if not offered then
+        fail("Couldn't get an adventure from %s: %s If you already have one, start with skip. Ending.",
+            c.questNPC, npcText())
+    end
     sleep(500)
 
     -- Which entrance does this adventure use?
     state.useEnt2 = false
     if c.ent2Names then
-        local text = tlo(function()
-            return mq.TLO.Window('AdventureRequestWnd').Child('AdvRqst_NPCText').Text()
-        end, '') or ''
-        text = text:lower()
+        local text = npcText():lower()
         for _, nm in ipairs(c.ent2Names) do
             if text:find(nm:lower(), 1, true) then state.useEnt2 = true end
         end
     end
     if state.useEnt2 then log('This adventure uses the second entrance.') end
 
+    -- Accept, and check it took: the button greys out (or the window closes)
+    -- once the adventure is ours
+    local function accepted()
+        return not windowOpen('AdventureRequestWnd') or not acceptEnabled()
+    end
     mq.cmd('/notify AdventureRequestWnd AdvRqst_AcceptButton leftmouseup')
+    if not waitFor(5000, accepted) then
+        mq.cmd('/notify AdventureRequestWnd AdvRqst_AcceptButton leftmouseup')
+        if not waitFor(5000, accepted) then
+            fail("Accepted the adventure but the window didn't confirm it: %s Ending.", npcText())
+        end
+    end
+    log('Adventure accepted.')
     sleep(2000)
 end
 
