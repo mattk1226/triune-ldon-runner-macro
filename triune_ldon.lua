@@ -672,9 +672,16 @@ local function leaveDungeon()
     setStep('Bazaar and Back')
     waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
     mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
-    waitFor(60000, function() return inZone('bazaar') end)
+    local landZone = camp().landZone
+    waitFor(60000, function() return inZone('bazaar') or inZone(landZone) end)
     sleep(5000)
-    if not inZone('bazaar') then fail("Bazaar and Back didn't take me to the Bazaar. Ending.") end
+    -- Bazaar and Back can be set to East Commonlands; if it already put us in
+    -- this camp's landing zone, skip the walk to the map
+    if inZone(landZone) then
+        log('Bazaar and Back put me in %s, skipping the map.', landZone)
+        return
+    end
+    if not inZone('bazaar') then fail("Bazaar and Back didn't take me to the Bazaar or %s. Ending.", landZone) end
     mapPort()
 end
 

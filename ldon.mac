@@ -890,10 +890,16 @@ Sub LeaveDungeon
     | Bazaar AA
     /delay 3m ${Me.AltAbilityReady[${BazaarAAID}]}
     /alt activate ${BazaarAAID}
-    /delay 60s ${Zone.ShortName.Equal[bazaar]}
+    /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[${LandZone}]})
     /delay 5s
+    | Bazaar and Back can be set to East Commonlands; if it already put us in
+    | this camp's landing zone, skip the walk to the map
+    /if (${Zone.ShortName.Equal[${LandZone}]}) {
+        /echo Bazaar and Back put me in ${LandZone}, skipping the map.
+        /return
+    }
     /if (${Zone.ShortName.NotEqual[bazaar]}) {
-        /echo Bazaar and Back didn't take me to the Bazaar. Ending.
+        /echo Bazaar and Back didn't take me to the Bazaar or ${LandZone}. Ending.
         /endmacro
     }
     /call MapPort

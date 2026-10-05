@@ -38,7 +38,7 @@ With no camp given, it uses `sro`.
 
 You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
 
-THIS ASSUMES YOUR BAZAAR AND BACK TAKES YOU TO THE BAZAAR
+Bazaar and Back can be set to the Bazaar or to East Commonlands. If it lands in East Commonlands, the camp's landing zone for every camp except `ep`, the walk to the Bazaar map is skipped.
 
 Type `/endmacro` to stop it.
 
@@ -111,7 +111,6 @@ The zone lines the macro crosses are built into `ldon.mac` (see `Sub BuiltInRout
 - `ep`: portal locations are approximate (no height or switch ID), and it is untested.
 - Camps with two portals (`sro`, `ep`, `bm`) choose the portal by reading the adventure text. That check is unconfirmed, so for now the macro may always go to the first portal. On an adventure that uses the second one, it will stop at the entrance.
 - Some South Ro tents are missing from the navmesh, so the macro walks through fixed clear spots near the camp. If your character snags there, rebuild the South Ro mesh or adjust the `Camp` and `MagusExit` locations in `Sub SetCamp`.
-- This assumes your bazaar and back takes you to the bazaar and not EC.
 
 ## Troubleshooting
 
