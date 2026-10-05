@@ -70,6 +70,9 @@ Sub Main(string a1, string a2)
     /declare ReturnPath   string outer none
     /declare RetMagusSay  string outer none
     /declare RetMagusName string outer Magus
+    /declare HasRetExit   bool   outer FALSE
+    /declare RetExitY     float  outer 0
+    /declare RetExitX     float  outer 0
 
     | Route data, filled in by LoadRoute
     /declare PathFile string outer ldon_paths.ini
@@ -178,7 +181,8 @@ Sub ParseArg(string a)
 | ---------------------------------------------------------
 | ================= PER-CAMP CONFIG =================
 | Paths are zone short names in travel order, separated by |  (none = same zone)
-| Ent2 is only used when the adventure's name is in Ent2Names.
+| Ent2 is only used when the adventure text contains one of the words or
+| phrases in Ent2Names (separated by |, upper/lower case doesn't matter).
 | MapRow, if set, picks the waypoint by its position in the list instead of by name.
 | MagusSay, if set, is said to the camp's Magus to port to the first entrance's zone.
 | RetMagusSay, if set, is said to the Magus in the landing zone to port to the camp.
@@ -203,10 +207,22 @@ Sub SetCamp
         /varset Ent2Path     innothule
         /varset Ent2Y        1353
         /varset Ent2X        1186
+        | Trip back: East Commonlands waypoint, then the Magus there ports to this camp
         /varset MapContinent 1
-        /varset MapWaypoint  Grobb
-        /varset LandZone     grobb
-        /varset ReturnPath   innothule|sro
+        /varset MapWaypoint  East Commonlands
+        /varset LandZone     ecommons
+        /varset RetMagusSay  South Ro
+        /varset RetMagusName Magus Zeir
+        | after the port, walk straight to this clear spot first (tents)
+        /varset HasRetExit   TRUE
+        /varset RetExitY     -1458.2
+        /varset RetExitX     1069.9
+        | Old trip back, running from Grobb. To use it, put a | in front of the
+        | nine lines above and remove the | from the four lines below.
+        |/varset MapContinent 1
+        |/varset MapWaypoint  Grobb
+        |/varset LandZone     grobb
+        |/varset ReturnPath   innothule|sro
         /return
     }
     /if (${Camp.Equal[ep]}) {
@@ -236,7 +252,9 @@ Sub SetCamp
         /varset Ent1X        3832.8
         /varset Ent1Z        2.5
         /varset Ent1Door     7
-        /varset Ent2Names    Dreary Grotto|Cesspits of Putrescence
+        | Ent1 (switch 7) is the crypt entrance, Ent2 (switch 10) is the grave entrance.
+        | The adventure text says which one to use.
+        /varset Ent2Names    grave
         /varset Ent2Zone     lfaydark
         /varset Ent2Path     gfaydark|lfaydark
         /varset Ent2Y        -111.0
@@ -699,9 +717,15 @@ Sub ReturnToCamp
 Sub UseMagus(string which)
     /declare phrase    string local ${MagusSay}
     /declare mname     string local ${MagusName}
+    /declare doExit    bool   local ${HasMagusExit}
+    /declare exitY     float  local ${MagusExitY}
+    /declare exitX     float  local ${MagusExitX}
     /if (${which.Equal[ret]}) {
         /varset phrase ${RetMagusSay}
         /varset mname  ${RetMagusName}
+        /varset doExit ${HasRetExit}
+        /varset exitY  ${RetExitY}
+        /varset exitX  ${RetExitX}
     }
     /declare mid       int    local ${NearestSpawn[npc ${mname}].ID}
     /declare startZone string local ${Zone.ShortName}
@@ -729,14 +753,14 @@ Sub UseMagus(string which)
         /return
     }
     | walk straight out of the arrival camp before nav takes over
-    /if (${HasMagusExit} && ${which.Equal[out]}) {
+    /if (${doExit}) {
         /varset t 30s
-        /moveto loc ${MagusExitY} ${MagusExitX}
+        /moveto loc ${exitY} ${exitX}
         :wait
             /delay 2
-        /if (${Math.Distance[${MagusExitY},${MagusExitX}]}>15 && ${t}) /goto :wait
+        /if (${Math.Distance[${exitY},${exitX}]}>15 && ${t}) /goto :wait
         /moveto off
-        /if (${Math.Distance[${MagusExitY},${MagusExitX}]}>15) /echo Didn't reach the clear spot after the port, trying nav from here.
+        /if (${Math.Distance[${exitY},${exitX}]}>15) /echo Didn't reach the clear spot after the port, carrying on from here.
     }
 /return
 
