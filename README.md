@@ -38,9 +38,26 @@ With no camp given, it uses `sro`.
 
 You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
 
-THIS ASSUMES YOUR BAZAAR AND BACK TAKES YOU TO THE BAZAAR
+Bazaar and Back can be set to the Bazaar or to East Commonlands. If it lands in East Commonlands, the landing zone for every camp, the walk to the Bazaar map is skipped.
 
 Type `/endmacro` to stop it.
+
+## Lua version (Triune plugin)
+
+`triune_ldon.lua` is a port of `ldon.mac` that runs as a standalone Triune tool, like `triune_track` or `triune_dps`. It does the same loop with the same camps, routes and settings, and adds a window with camp selection, Start/Stop, a requirements check (MQ2Nav, mesh, MoveUtils, TAC) and a log.
+
+Install: copy `triune_ldon.lua` into your MacroQuest `lua` folder.
+
+```
+/lua run triune_ldon            opens the window idle
+/lua run triune_ldon sro skip   starts right away, like /mac ldon sro skip
+/ldon start [camp] [skip]       start the loop
+/ldon stop                      stop after the current step (the window stays open)
+/ldon camp <sro|ep|bm|ec|nro>   pick a camp
+/ldon status | show | hide | toggle | quit
+```
+
+Camp, Risk row, Type row and max clear time are saved per character in `config/triune_ldon_<Name>.lua`. Per-camp data is in the `CAMPS` table and the zone crossings are in `ROUTES` at the top of the file. Stopping it, or a failure, leaves the TAC as it was, the same as `/endmacro`. The `ldon_paths.ini` fallback for extra routes is not ported.
 
 ## What one loop does
 
@@ -50,7 +67,7 @@ Type `/endmacro` to stop it.
 4. Runs `/ac puller` and `/ac run`, then waits for "You have successfully completed your adventure".
 5. Runs `/ac manual`, waits until combat has been over for five seconds, then `/ac stop`.
 6. Uses Bazaar and Back, walks to the map, and ports to the camp's waypoint.
-7. Returns to the camp. The `bm` and `nro` camps port to East Commonlands and use Magus Zeir.
+7. Returns to the camp. The `sro`, `ep`, `bm` and `nro` camps port to East Commonlands and use Magus Zeir.
 
 ## Settings
 
@@ -59,6 +76,7 @@ General settings are at the top of `Sub Main` in `ldon.mac`:
 - `CharName`: optional. Set it to restrict the macro to one character.
 - `RiskIndex` and `TypeIndex`: positions in the adventure window dropdowns. The defaults are 2 (High) and 3 (Mob Count).
 - `MaxClearTime`: how long to wait for the adventure to complete before leaving anyway.
+- `FallbackCamp`: if the recruiter refuses an adventure three times, take the Magus at the camp to another camp, run one loop there, and then go back to the original camp. Empty means a random other camp. Set it to `none` to just stop. In the Lua version it's the "If refused, run" dropdown or `/ldon fallback <camp|random|none>`.
 
 Per-camp settings (recruiter, portal location and switch ID, waypoint, Magus phrases) are in `Sub SetCamp`.
 
@@ -77,7 +95,7 @@ Zones used:
 |---|---|
 | All | `bazaar` |
 | `sro` | `sro`, `innothule`, `guktop`, `grobb` |
-| `ep` | `everfrost` |
+| `ep` | `ecommons`, `everfrost` |
 | `bm` | `ecommons`, `butcher`, `gfaydark`, `lfaydark` |
 | `ec` | `ecommons`, `sro` (plus `nro`, `oasis` if the Magus port fails) |
 | `nro` | `ecommons`, `nro` |
@@ -94,7 +112,6 @@ The zone lines the macro crosses are built into `ldon.mac` (see `Sub BuiltInRout
 - `ep`: portal locations are approximate (no height or switch ID), and it is untested.
 - Camps with two portals (`sro`, `ep`, `bm`) choose the portal by reading the adventure text. That check is unconfirmed, so for now the macro may always go to the first portal. On an adventure that uses the second one, it will stop at the entrance.
 - Some South Ro tents are missing from the navmesh, so the macro walks through fixed clear spots near the camp. If your character snags there, rebuild the South Ro mesh or adjust the `Camp` and `MagusExit` locations in `Sub SetCamp`.
-- This assumes your bazaar and back takes you to the bazaar and not EC.
 
 ## Troubleshooting
 
