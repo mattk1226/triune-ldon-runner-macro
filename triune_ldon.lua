@@ -96,10 +96,15 @@ local CAMPS = {
         ent1      = { zone = 'everfrost', path = {}, y = -828, x = -5458, door = 0 },
         ent2Names = { 'Hushed Banquet', 'Heart of the Menagerie' },
         ent2      = { zone = 'everfrost', path = {}, y = 2771, x = -4725, door = 0 },
-        -- GUESS - confirm the Everfrost waypoint lands in Everfrost Peaks
-        map        = { continent = 1, waypoint = 'Everfrost' },
-        landZone   = 'everfrost',
+        -- Trip back: East Commonlands waypoint, then the Magus there ports to this camp
+        -- (faster than the Everfrost waypoint and running).
+        -- GUESS - confirm 'Everfrost' is the phrase Magus Zeir answers to
+        map        = { continent = 1, waypoint = 'East Commonlands' },
+        landZone   = 'ecommons',
         returnPath = {},
+        retMagus   = { say = 'Everfrost', name = 'Magus Zeir' },
+        -- Old trip back, the Everfrost waypoint:
+        -- map = { continent = 1, waypoint = 'Everfrost' }, landZone = 'everfrost', retMagus = nil,
     },
     bm = {
         label     = "Mistmoore's Catacombs (Butcherblock)",

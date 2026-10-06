@@ -236,10 +236,19 @@ Sub SetCamp
         /varset Ent2Zone     everfrost
         /varset Ent2Y        2771
         /varset Ent2X        -4725
-        | GUESS - confirm the Everfrost waypoint lands in Everfrost Peaks
+        | Trip back: East Commonlands waypoint, then the Magus there ports to this camp
+        | (faster than the Everfrost waypoint and running).
+        | GUESS - confirm "Everfrost" is the phrase Magus Zeir answers to
         /varset MapContinent 1
-        /varset MapWaypoint  Everfrost
-        /varset LandZone     everfrost
+        /varset MapWaypoint  East Commonlands
+        /varset LandZone     ecommons
+        /varset RetMagusSay  Everfrost
+        /varset RetMagusName Magus Zeir
+        | Old trip back, the Everfrost waypoint. To use it, put a | in front of the
+        | five lines above and remove the | from the three lines below.
+        |/varset MapWaypoint  Everfrost
+        |/varset LandZone     everfrost
+        |/varset RetMagusSay  none
         /return
     }
     /if (${Camp.Equal[bm]}) {

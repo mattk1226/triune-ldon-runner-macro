@@ -38,7 +38,7 @@ With no camp given, it uses `sro`.
 
 You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
 
-Bazaar and Back can be set to the Bazaar or to East Commonlands. If it lands in East Commonlands, the camp's landing zone for every camp except `ep`, the walk to the Bazaar map is skipped.
+Bazaar and Back can be set to the Bazaar or to East Commonlands. If it lands in East Commonlands, the landing zone for every camp, the walk to the Bazaar map is skipped.
 
 Type `/endmacro` to stop it.
 
@@ -67,7 +67,7 @@ Camp, Risk row, Type row and max clear time are saved per character in `config/t
 4. Runs `/ac puller` and `/ac run`, then waits for "You have successfully completed your adventure".
 5. Runs `/ac manual`, waits until combat has been over for five seconds, then `/ac stop`.
 6. Uses Bazaar and Back, walks to the map, and ports to the camp's waypoint.
-7. Returns to the camp. The `bm` and `nro` camps port to East Commonlands and use Magus Zeir.
+7. Returns to the camp. The `sro`, `ep`, `bm` and `nro` camps port to East Commonlands and use Magus Zeir.
 
 ## Settings
 
@@ -94,7 +94,7 @@ Zones used:
 |---|---|
 | All | `bazaar` |
 | `sro` | `sro`, `innothule`, `guktop`, `grobb` |
-| `ep` | `everfrost` |
+| `ep` | `ecommons`, `everfrost` |
 | `bm` | `ecommons`, `butcher`, `gfaydark`, `lfaydark` |
 | `ec` | `ecommons`, `sro` (plus `nro`, `oasis` if the Magus port fails) |
 | `nro` | `ecommons`, `nro` |
