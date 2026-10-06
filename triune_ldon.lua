@@ -12,10 +12,13 @@
 --         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 --   skip: already have an adventure and standing at the recruiter,
 --         so don't request one on the first loop
+--   If the recruiter refuses an adventure, one loop is run at the fallback
+--   camp (default ec, or sro when the camp is ec) and then it goes back.
 --   Passing a camp starts the loop right away; with no arguments the window
 --   opens idle so you can pick a camp and press Start.
 --
 -- Commands:  /ldon start [camp] [skip] | stop | camp <name> | status
+--            /ldon fallback <camp|auto|none>
 --            /ldon show | hide | toggle | quit
 -- Requires MQ2Nav, MQ2MoveUtils, a navmesh for every zone on the route, the
 -- Bazaar and Back AA, and triune.lua running (for the /ac puller commands).
@@ -40,6 +43,9 @@ local settings = {
     typeIndex = 3,
     -- Minutes to wait for the adventure to complete before leaving anyway
     maxClearMin = 90,
+    -- If the recruiter refuses to give an adventure, run one loop at this camp
+    -- instead, then go back. 'auto' = ec (or sro when the camp is ec), 'none' = just stop.
+    fallbackCamp = 'auto',
 }
 
 -- Triune auto combat puller
@@ -232,6 +238,7 @@ local function saveConfig()
     file:write(string.format('    riskIndex = %d,\n', settings.riskIndex))
     file:write(string.format('    typeIndex = %d,\n', settings.typeIndex))
     file:write(string.format('    maxClearMin = %d,\n', settings.maxClearMin))
+    file:write(string.format('    fallbackCamp = %q,\n', settings.fallbackCamp))
     file:write('}\n')
     file:close()
 end
@@ -246,6 +253,9 @@ local function loadConfig()
     settings.riskIndex = tonumber(data.riskIndex) or settings.riskIndex
     settings.typeIndex = tonumber(data.typeIndex) or settings.typeIndex
     settings.maxClearMin = tonumber(data.maxClearMin) or settings.maxClearMin
+    if CAMPS[data.fallbackCamp] or data.fallbackCamp == 'auto' or data.fallbackCamp == 'none' then
+        settings.fallbackCamp = data.fallbackCamp
+    end
 end
 
 -- ============================================================================
@@ -424,7 +434,16 @@ end
 -- ============================================================================
 -- ADVENTURE STEPS
 -- ============================================================================
-local function camp() return CAMPS[settings.camp] end
+-- state.campKey is the camp being run right now; it differs from settings.camp
+-- only during a fallback loop
+local function camp() return CAMPS[state.campKey or settings.camp] end
+
+local function fallbackFor(key)
+    local fb = settings.fallbackCamp
+    if fb == 'auto' then fb = (key == 'ec') and 'sro' or 'ec' end
+    if fb == key or not CAMPS[fb] then return nil end
+    return fb
+end
 
 local function npcText()
     local text = tlo(function()
@@ -487,8 +506,9 @@ local function getAdventure()
         if attempt < 3 then sleep(5000) end
     end
     if not offered then
-        fail("Couldn't get an adventure from %s: %s If you already have one, start with skip. Ending.",
-            c.questNPC, npcText())
+        -- the main loop decides whether to try the fallback camp
+        mq.cmd('/windowstate AdventureRequestWnd close')
+        return false
     end
     sleep(500)
 
@@ -516,6 +536,7 @@ local function getAdventure()
     end
     log('Adventure accepted.')
     sleep(2000)
+    return true
 end
 
 -- Port by talking to a Magus. m = { say, name, exit }
@@ -737,7 +758,7 @@ local function preflight()
         end
     end
     if not c.map or not c.map.waypoint then
-        fail("The return trip for camp [%s] isn't set up yet (map waypoint, landing zone, path back). Ending.", settings.camp)
+        fail("The return trip for camp [%s] isn't set up yet (map waypoint, landing zone, path back). Ending.", state.campKey)
     end
     if not pluginLoaded('MQ2Nav') then fail('MQ2Nav is not loaded (/plugin mq2nav). Ending.') end
     if not pluginLoaded('MQ2MoveUtils') then fail('MQ2MoveUtils is not loaded (/plugin mq2moveutils). Ending.') end
@@ -749,7 +770,7 @@ local function preflight()
     if not c.magus then missing = missing + checkPath(c.campZone, c.ent1.path) end
     if c.ent2 then missing = missing + checkPath(c.campZone, c.ent2.path) end
     missing = missing + checkPath(c.landZone, c.returnPath)
-    if missing > 0 then fail('%d zone crossing(s) missing for camp [%s]. Ending.', missing, settings.camp) end
+    if missing > 0 then fail('%d zone crossing(s) missing for camp [%s]. Ending.', missing, state.campKey) end
 end
 
 local function getToCamp()
@@ -780,35 +801,58 @@ local function getToCamp()
 end
 
 local function adventureLoop()
-    local c = camp()
+    local home = settings.camp
+    local fallback = fallbackFor(home)
+    local onFallback = false
+    state.campKey = home
     preflight()
-    log('Running camp [%s] with recruiter %s.', settings.camp, c.questNPC)
+    log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, fallback or 'none')
     getToCamp()
 
     while true do
+        local c = camp()
+        local got = true
         if state.skipGet then
             log('Skipping the adventure request for this loop (assuming the first entrance).')
             state.useEnt2 = false
         else
-            getAdventure()
+            got = getAdventure()
         end
         state.skipGet = false
-        if c.campSpot then leaveCamp() end
-        if state.useEnt2 then
-            setStep('Travelling to entrance')
-            travelPath(c.ent2.path)
+
+        if not got then
+            -- run one loop at the fallback camp, then come back here
+            if onFallback or not fallback then
+                fail("Couldn't get an adventure from %s. If you already have one, start with skip. Ending.", c.questNPC)
+            end
+            log("Couldn't get an adventure at [%s], running one loop at [%s] instead.", home, fallback)
+            onFallback = true
+            state.campKey = fallback
+            getToCamp()
         else
-            if c.magus then useMagus(c.magus) end
-            setStep('Travelling to entrance')
-            -- does nothing if the Magus already put us in the entrance zone
-            travelPath(c.ent1.path)
+            if c.campSpot then leaveCamp() end
+            if state.useEnt2 then
+                setStep('Travelling to entrance')
+                travelPath(c.ent2.path)
+            else
+                if c.magus then useMagus(c.magus) end
+                setStep('Travelling to entrance')
+                -- does nothing if the Magus already put us in the entrance zone
+                travelPath(c.ent1.path)
+            end
+            enterDungeon()
+            clearDungeon()
+            -- after a fallback loop, head back to the original camp
+            if onFallback then
+                log('Fallback loop done, heading back to [%s].', home)
+                onFallback = false
+                state.campKey = home
+            end
+            leaveDungeon()
+            returnToCamp()
+            state.runs = state.runs + 1
+            log('Finished run #%d', state.runs)
         end
-        enterDungeon()
-        clearDungeon()
-        leaveDungeon()
-        returnToCamp()
-        state.runs = state.runs + 1
-        log('Finished run #%d', state.runs)
     end
 end
 
@@ -827,6 +871,7 @@ local function runSession()
         end
     end
     cleanupMovement()
+    state.campKey = nil
     state.active = false
     state.stopRequested = false
     state.skipGet = false
@@ -900,6 +945,15 @@ local function ldonCommand(...)
         else
             log('Unknown camp [%s]. Use one of: sro ep bm ec nro', campName)
         end
+    elseif cmd == 'fallback' then
+        local fb = (args[2] or ''):lower()
+        if CAMPS[fb] or fb == 'auto' or fb == 'none' then
+            settings.fallbackCamp = fb
+            saveConfig()
+            log('Fallback camp set to [%s].', fb)
+        else
+            log('Fallback camp is [%s]. Use: /ldon fallback <sro|ep|bm|ec|nro|auto|none>', settings.fallbackCamp)
+        end
     elseif cmd == 'status' then
         log('%s | camp [%s] | runs %d | %s', state.active and 'Running' or 'Idle', settings.camp, state.runs, state.step)
     elseif cmd == 'show' then
@@ -912,7 +966,7 @@ local function ldonCommand(...)
         requestStop()
         state.isRunning = false
     else
-        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|status|show|hide|toggle|quit]')
+        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|auto|none>|status|show|hide|toggle|quit]')
     end
 end
 
@@ -984,6 +1038,20 @@ end
 local CAMP_LABELS = {}
 for i, key in ipairs(CAMP_ORDER) do CAMP_LABELS[i] = string.format('%s - %s', key, CAMPS[key].label) end
 
+local FALLBACK_KEYS = { 'auto', 'none' }
+local FALLBACK_LABELS = { 'auto - ec (sro when the camp is ec)', 'none - just stop' }
+for _, key in ipairs(CAMP_ORDER) do
+    table.insert(FALLBACK_KEYS, key)
+    table.insert(FALLBACK_LABELS, string.format('%s - %s', key, CAMPS[key].label))
+end
+
+local function fallbackIndex()
+    for i, key in ipairs(FALLBACK_KEYS) do
+        if key == settings.fallbackCamp then return i end
+    end
+    return 1
+end
+
 local function campIndex()
     for i, key in ipairs(CAMP_ORDER) do
         if key == settings.camp then return i end
@@ -1017,7 +1085,7 @@ local function DrawLDoNUI()
         if state.active then
             ImGui.TextColored(0.37, 0.88, 0.64, 1, 'RUNNING')
             ImGui.SameLine()
-            ImGui.Text(string.format('[%s]  runs: %d  elapsed: %s', settings.camp, state.runs,
+            ImGui.Text(string.format('[%s]  runs: %d  elapsed: %s', state.campKey or settings.camp, state.runs,
                 formatElapsed(mq.gettime() - state.startedAt)))
         else
             ImGui.TextDisabled('IDLE')
@@ -1036,6 +1104,14 @@ local function DrawLDoNUI()
         if changed and CAMP_ORDER[idx] then
             settings.camp = CAMP_ORDER[idx]
             saveConfig()
+        end
+        local fbIdx, fbChanged = ImGui.Combo('If refused, run##ldonFallback', fallbackIndex(), FALLBACK_LABELS)
+        if fbChanged and FALLBACK_KEYS[fbIdx] then
+            settings.fallbackCamp = FALLBACK_KEYS[fbIdx]
+            saveConfig()
+        end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('If the recruiter refuses an adventure, run one loop at this camp, then go back')
         end
         ImGui.PopItemWidth()
 

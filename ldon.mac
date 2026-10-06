@@ -4,6 +4,8 @@
 |         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 |   skip: already have an adventure and standing at the recruiter,
 |         so don't request one on the first loop
+| If the recruiter refuses an adventure, one loop is run at FallbackCamp
+| (default ec, or sro when the camp is ec) and then it goes back.
 | Start in the camp's zone. Every zone the loop passes through needs a navmesh.
 | Zone crossings are built in (see Sub BuiltInRoute).
 
@@ -29,6 +31,11 @@ Sub Main(string a1, string a2)
     | only sent once combat is completely over
     /declare PullerOffCmd    string outer /ac stop
     /declare MaxClearTime string outer 90m
+
+    | If the recruiter refuses to give an adventure, run one loop at this camp
+    | instead, then go back to the original camp. Empty = ec (or sro when the
+    | camp is ec), none = just stop.
+    /declare FallbackCamp string outer
 
     | "Bazaar and Back" AA, and the map switch in the Bazaar
     /declare BazaarAAID   int    outer 331
@@ -89,6 +96,9 @@ Sub Main(string a1, string a2)
     /declare AdvWon   bool   outer FALSE
     /declare Missing  int    outer 0
     /declare Runs     int    outer 0
+    /declare GotAdv   bool   outer FALSE
+    /declare HomeCamp string outer
+    /declare OnFallback bool outer FALSE
 
     | a missing argument can arrive as an empty value, so only use real ones
     /if (${Defined[a1]}) {
@@ -98,6 +108,18 @@ Sub Main(string a1, string a2)
         /if (${a2.Length} && ${a2.NotEqual[NULL]}) /call ParseArg ${a2}
     }
     /call SetCamp
+    /if (!${FallbackCamp.Length}) {
+        /if (${Camp.Equal[ec]}) {
+            /varset FallbackCamp sro
+        } else {
+            /varset FallbackCamp ec
+        }
+    }
+    /if (${FallbackCamp.Equal[${Camp}]}) /varset FallbackCamp none
+    /if (!${Select[${FallbackCamp},sro,ep,bm,ec,nro,none]}) {
+        /echo Unknown fallback camp [${FallbackCamp}]. Use one of: sro ep bm ec nro none
+        /endmacro
+    }
 
     | ---------- startup checks ----------
     /if (${CharName.Length}) {
@@ -118,38 +140,30 @@ Sub Main(string a1, string a2)
         /echo ${Missing} zone crossing(s) missing for camp [${Camp}]. Ending.
         /endmacro
     }
-    /echo Running camp [${Camp}] with recruiter ${QuestNPC}.
-
-    | ---------- where am I starting? ----------
-    /if (${Zone.ShortName.Equal[bazaar]}) {
-        /echo Starting in the Bazaar: taking the map and heading to camp.
-        /call MapPort
-        /call ReturnToCamp
-    }
-    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
-        /if (${Zone.ShortName.Equal[${LandZone}]} || ${ReturnPath.Find[${Zone.ShortName}]}) {
-            /echo Starting in ${Zone.ShortName}: heading to camp.
-            /call ReturnToCamp
-        }
-    }
-    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
-        /echo Starting in ${Zone.ShortName}: going to the Bazaar, then to camp.
-        /call LeaveDungeon
-        /call ReturnToCamp
-    }
-    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
-        /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
-        /endmacro
-    }
+    /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: ${FallbackCamp}).
+    /call GetToCamp
 
     :mainloop
         /if (${SkipGet}) {
             /echo Skipping the adventure request for this loop (assuming the first entrance).
             /varset UseEnt2 FALSE
+            /varset GotAdv  TRUE
         } else {
             /call GetAdventure
         }
         /varset SkipGet FALSE
+        /if (!${GotAdv}) {
+            /if (${OnFallback} || ${FallbackCamp.Equal[none]}) {
+                /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
+                /endmacro
+            }
+            /echo Couldn't get an adventure at [${Camp}], running one loop at [${FallbackCamp}] instead.
+            /varset HomeCamp   ${Camp}
+            /varset OnFallback TRUE
+            /call SwitchCamp ${FallbackCamp}
+            /call GetToCamp
+            /goto :mainloop
+        }
         /if (${HasCampSpot}) /call LeaveCamp
         /if (${UseEnt2}) {
             /call TravelPath ${Ent2Path}
@@ -160,11 +174,49 @@ Sub Main(string a1, string a2)
         }
         /call EnterDungeon
         /call ClearDungeon
+        | after a fallback loop, head back to the original camp
+        /if (${OnFallback}) {
+            /echo Fallback loop done, heading back to [${HomeCamp}].
+            /call SwitchCamp ${HomeCamp}
+            /varset OnFallback FALSE
+        }
         /call LeaveDungeon
         /call ReturnToCamp
         /varcalc Runs ${Runs}+1
         /echo Finished run #${Runs}
     /goto :mainloop
+/return
+
+| ---------------------------------------------------------
+| Get from wherever I am to the current camp
+Sub GetToCamp
+    /if (${Zone.ShortName.Equal[bazaar]}) {
+        /echo In the Bazaar: taking the map and heading to camp.
+        /call MapPort
+        /call ReturnToCamp
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /if (${Zone.ShortName.Equal[${LandZone}]} || ${ReturnPath.Find[${Zone.ShortName}]}) {
+            /echo In ${Zone.ShortName}: heading to camp.
+            /call ReturnToCamp
+        }
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /echo In ${Zone.ShortName}: going to the Bazaar, then to camp.
+        /call LeaveDungeon
+        /call ReturnToCamp
+    }
+    /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
+        /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
+        /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+| Switch every per-camp setting over to another camp
+Sub SwitchCamp(string c)
+    /varset Camp ${c}
+    /call SetCamp
 /return
 
 | ---------------------------------------------------------
@@ -189,6 +241,38 @@ Sub ParseArg(string a)
 | An entrance Z of none means "let nav work out the height".
 | An entrance Door is the switch ID to click (0 = nearest switch).
 Sub SetCamp
+    | start from the defaults so nothing carries over from another camp
+    | (zones and the recruiter are set by every camp below)
+    /varset HasCampSpot  FALSE
+    /varset CampY        0
+    /varset CampX        0
+    /varset CampZ        0
+    /varset Ent1Path     none
+    /varset Ent1Y        0
+    /varset Ent1X        0
+    /varset Ent1Z        none
+    /varset Ent1Door     0
+    /varset MagusSay     none
+    /varset MagusName    Magus
+    /varset HasMagusExit FALSE
+    /varset MagusExitY   0
+    /varset MagusExitX   0
+    /varset Ent2Names    none
+    /varset Ent2Path     none
+    /varset Ent2Y        0
+    /varset Ent2X        0
+    /varset Ent2Z        none
+    /varset Ent2Door     0
+    /varset MapContinent 0
+    /varset MapWaypoint  none
+    /varset MapRow       0
+    /varset ReturnPath   none
+    /varset RetMagusSay  none
+    /varset RetMagusName Magus
+    /varset HasRetExit   FALSE
+    /varset RetExitY     0
+    /varset RetExitX     0
+
     /if (${Camp.Equal[sro]}) {
         | Deepest Guk
         /varset CampZone     sro
@@ -649,6 +733,7 @@ Sub GetAdventure
     /declare i     int    local 1
     /declare nm    string local
     /declare tries int    local 0
+    /varset GotAdv FALSE
     /if (!${npcID}) {
         /echo Can't find ${QuestNPC}. Ending.
         /endmacro
@@ -691,7 +776,8 @@ Sub GetAdventure
     | The Accept button only lights up when the server offers an adventure.
     | On an error (already have one, not eligible, ...) the server puts the
     | reason in the window text and Accept stays greyed out, so retry a couple
-    | of times and then stop instead of travelling without an adventure.
+    | of times and then give up instead of travelling without an adventure
+    | (the main loop then tries the fallback camp).
     :request
     /varcalc tries ${tries}+1
     /notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup
@@ -702,8 +788,8 @@ Sub GetAdventure
             /delay 5s
             /goto :request
         }
-        /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
-        /endmacro
+        /windowstate AdventureRequestWnd close
+        /return
     }
     /delay 5
 
@@ -733,6 +819,7 @@ Sub GetAdventure
         /endmacro
     }
     /echo Adventure accepted.
+    /varset GotAdv TRUE
     /delay 2s
 /return
 
