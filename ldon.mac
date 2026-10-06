@@ -4,8 +4,8 @@
 |         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 |   skip: already have an adventure and standing at the recruiter,
 |         so don't request one on the first loop
-| If the recruiter refuses an adventure, one loop is run at FallbackCamp
-| (default ec, or sro when the camp is ec) and then it goes back.
+| If the recruiter refuses an adventure, a Magus ports me to another camp
+| (random unless FallbackCamp is set), one loop is run there, and then it goes back.
 | Start in the camp's zone. Every zone the loop passes through needs a navmesh.
 | Zone crossings are built in (see Sub BuiltInRoute).
 
@@ -32,10 +32,11 @@ Sub Main(string a1, string a2)
     /declare PullerOffCmd    string outer /ac stop
     /declare MaxClearTime string outer 90m
 
-    | If the recruiter refuses to give an adventure, run one loop at this camp
-    | instead, then go back to the original camp. Empty = ec (or sro when the
-    | camp is ec), none = just stop.
+    | If the recruiter refuses to give an adventure, take a Magus to this camp,
+    | run one loop there, then go back to the original camp.
+    | Empty = a random other camp, none = just stop.
     /declare FallbackCamp string outer
+    /declare AllCamps     string outer sro|ep|bm|ec|nro
 
     | "Bazaar and Back" AA, and the map switch in the Bazaar
     /declare BazaarAAID   int    outer 331
@@ -77,6 +78,8 @@ Sub Main(string a1, string a2)
     /declare ReturnPath   string outer none
     /declare RetMagusSay  string outer none
     /declare RetMagusName string outer Magus
+    | what to say to a Magus to get to this camp's zone (used to reach a fallback camp)
+    /declare CampMagusSay string outer none
     /declare HasRetExit   bool   outer FALSE
     /declare RetExitY     float  outer 0
     /declare RetExitX     float  outer 0
@@ -99,6 +102,7 @@ Sub Main(string a1, string a2)
     /declare GotAdv   bool   outer FALSE
     /declare HomeCamp string outer
     /declare OnFallback bool outer FALSE
+    /declare NextCamp   string outer
 
     | a missing argument can arrive as an empty value, so only use real ones
     /if (${Defined[a1]}) {
@@ -108,17 +112,11 @@ Sub Main(string a1, string a2)
         /if (${a2.Length} && ${a2.NotEqual[NULL]}) /call ParseArg ${a2}
     }
     /call SetCamp
-    /if (!${FallbackCamp.Length}) {
-        /if (${Camp.Equal[ec]}) {
-            /varset FallbackCamp sro
-        } else {
-            /varset FallbackCamp ec
+    /if (${FallbackCamp.Length}) {
+        /if (!${Select[${FallbackCamp},sro,ep,bm,ec,nro,none]}) {
+            /echo Unknown fallback camp [${FallbackCamp}]. Use one of: sro ep bm ec nro none (or leave it empty for random)
+            /endmacro
         }
-    }
-    /if (${FallbackCamp.Equal[${Camp}]}) /varset FallbackCamp none
-    /if (!${Select[${FallbackCamp},sro,ep,bm,ec,nro,none]}) {
-        /echo Unknown fallback camp [${FallbackCamp}]. Use one of: sro ep bm ec nro none
-        /endmacro
     }
 
     | ---------- startup checks ----------
@@ -140,7 +138,12 @@ Sub Main(string a1, string a2)
         /echo ${Missing} zone crossing(s) missing for camp [${Camp}]. Ending.
         /endmacro
     }
-    /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: ${FallbackCamp}).
+    | a fallback camp that is the camp being run means "pick another one at random"
+    /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
+        /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: ${FallbackCamp}).
+    } else {
+        /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: random).
+    }
     /call GetToCamp
 
     :mainloop
@@ -157,10 +160,18 @@ Sub Main(string a1, string a2)
                 /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
                 /endmacro
             }
-            /echo Couldn't get an adventure at [${Camp}], running one loop at [${FallbackCamp}] instead.
+            /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
+                /varset NextCamp ${FallbackCamp}
+            } else {
+                /call PickRandomCamp
+            }
+            /echo Couldn't get an adventure at [${Camp}], running one loop at [${NextCamp}] instead.
             /varset HomeCamp   ${Camp}
             /varset OnFallback TRUE
-            /call SwitchCamp ${FallbackCamp}
+            /call SwitchCamp ${NextCamp}
+            | the Magus right here ports straight to the other camp; the Bazaar
+            | route in GetToCamp is only a backup if that doesn't work
+            /if (${Zone.ShortName.NotEqual[${CampZone}]}) /call UseMagus to
             /call GetToCamp
             /goto :mainloop
         }
@@ -210,6 +221,29 @@ Sub GetToCamp
         /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
         /endmacro
     }
+/return
+
+| ---------------------------------------------------------
+| Pick a random camp other than the current one into NextCamp
+Sub PickRandomCamp
+    /declare list string local
+    /declare c    string local
+    /declare i    int    local 1
+    /declare n    int    local 0
+    /declare r    int    local 0
+    :each
+    /varset c ${AllCamps.Arg[${i},|]}
+    /if (${c.Length} && ${c.NotEqual[NULL]}) {
+        /if (${c.NotEqual[${Camp}]}) {
+            /varset list ${list}${c}|
+            /varcalc n ${n}+1
+        }
+        /varcalc i ${i}+1
+        /goto :each
+    }
+    /varset r ${Math.Rand[${n}]}
+    /if (${r}>=${n}) /varcalc r ${n}-1
+    /varset NextCamp ${list.Arg[${Math.Calc[${r}+1].Int},|]}
 /return
 
 | ---------------------------------------------------------
@@ -269,11 +303,13 @@ Sub SetCamp
     /varset ReturnPath   none
     /varset RetMagusSay  none
     /varset RetMagusName Magus
+    /varset CampMagusSay none
     /varset HasRetExit   FALSE
     /varset RetExitY     0
     /varset RetExitX     0
 
     /if (${Camp.Equal[sro]}) {
+        /varset CampMagusSay South Ro
         | Deepest Guk
         /varset CampZone     sro
         /varset QuestNPC     Kallei Ribblok
@@ -310,6 +346,7 @@ Sub SetCamp
         /return
     }
     /if (${Camp.Equal[ep]}) {
+        /varset CampMagusSay Everfrost
         | Miragul's Menagerie - both entrances are in Everfrost itself
         /varset CampZone     everfrost
         /varset QuestNPC     Mannis McGuyett
@@ -336,6 +373,7 @@ Sub SetCamp
         /return
     }
     /if (${Camp.Equal[bm]}) {
+        /varset CampMagusSay Butcherblock
         | Mistmoore's Catacombs - entrances are in Lesser Faydark
         /varset CampZone     butcher
         /varset QuestNPC     Xyzelauna
@@ -363,6 +401,7 @@ Sub SetCamp
         /return
     }
     /if (${Camp.Equal[ec]}) {
+        /varset CampMagusSay East Commonlands
         | Rujarkian Hills - entrance is in South Ro
         /varset CampZone     ecommons
         /varset QuestNPC     Periac Windfell
@@ -388,6 +427,7 @@ Sub SetCamp
         /return
     }
     /if (${Camp.Equal[nro]}) {
+        /varset CampMagusSay North Ro
         | Takish-Hiz - entrance is in North Ro itself
         /varset CampZone     nro
         /varset QuestNPC     Escon Quickbow
@@ -837,7 +877,8 @@ Sub ReturnToCamp
 
 | ---------------------------------------------------------
 | Port by talking to a Magus
-| which = out (camp -> entrance zone) or ret (landing zone -> camp)
+| which = out (camp -> entrance zone), ret (landing zone -> camp)
+|         or to (any Magus -> this camp's zone)
 Sub UseMagus(string which)
     /declare phrase    string local ${MagusSay}
     /declare mname     string local ${MagusName}
@@ -847,6 +888,15 @@ Sub UseMagus(string which)
     /if (${which.Equal[ret]}) {
         /varset phrase ${RetMagusSay}
         /varset mname  ${RetMagusName}
+        /varset doExit ${HasRetExit}
+        /varset exitY  ${RetExitY}
+        /varset exitX  ${RetExitX}
+    }
+    | to = from wherever I am straight to this camp's zone; the arrival spot is
+    | the same one the trip back uses
+    /if (${which.Equal[to]}) {
+        /varset phrase ${CampMagusSay}
+        /varset mname  Magus
         /varset doExit ${HasRetExit}
         /varset exitY  ${RetExitY}
         /varset exitX  ${RetExitX}

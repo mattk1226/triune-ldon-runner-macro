@@ -12,13 +12,13 @@
 --         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 --   skip: already have an adventure and standing at the recruiter,
 --         so don't request one on the first loop
---   If the recruiter refuses an adventure, one loop is run at the fallback
---   camp (default ec, or sro when the camp is ec) and then it goes back.
+--   If the recruiter refuses an adventure, a Magus ports me to another camp
+--   (random unless a fallback camp is set), one loop is run there, then it goes back.
 --   Passing a camp starts the loop right away; with no arguments the window
 --   opens idle so you can pick a camp and press Start.
 --
 -- Commands:  /ldon start [camp] [skip] | stop | camp <name> | status
---            /ldon fallback <camp|auto|none>
+--            /ldon fallback <camp|random|none>
 --            /ldon show | hide | toggle | quit
 -- Requires MQ2Nav, MQ2MoveUtils, a navmesh for every zone on the route, the
 -- Bazaar and Back AA, and triune.lua running (for the /ac puller commands).
@@ -44,8 +44,9 @@ local settings = {
     -- Minutes to wait for the adventure to complete before leaving anyway
     maxClearMin = 90,
     -- If the recruiter refuses to give an adventure, run one loop at this camp
-    -- instead, then go back. 'auto' = ec (or sro when the camp is ec), 'none' = just stop.
-    fallbackCamp = 'auto',
+    -- instead (getting there by Magus), then go back.
+    -- 'random' = any other camp, 'none' = just stop.
+    fallbackCamp = 'random',
 }
 
 -- Triune auto combat puller
@@ -71,6 +72,8 @@ local MAP_SWITCH_ID = 146
 -- magus:     if set, said to the camp's Magus to port to the first entrance's zone
 -- retMagus:  if set, said to the Magus in the landing zone to port to the camp
 -- exit:      after a Magus port, walk straight to this clear spot first (tents)
+-- magusSay:  what to say to a Magus to get to this camp's zone (used to reach a
+--            fallback camp; the arrival spot is retMagus.exit)
 -- An entrance z of nil means "let nav work out the height".
 -- An entrance door is the switch ID to click (0 = nearest switch).
 -- ============================================================================
@@ -80,6 +83,7 @@ local CAMPS = {
     sro = {
         label     = 'Deepest Guk (South Ro)',
         campZone  = 'sro',
+        magusSay  = 'South Ro',
         questNPC  = 'Kallei Ribblok',
         campSpot  = { y = -1497.2, x = 998.3, z = -23.2 },
         ent1      = { zone = 'guktop', path = { 'innothule', 'guktop' }, y = 438.1, x = 224.2, z = -9.2, door = 0 },
@@ -98,6 +102,7 @@ local CAMPS = {
         label     = "Miragul's Menagerie (Everfrost)",
         -- both entrances are in Everfrost itself
         campZone  = 'everfrost',
+        magusSay  = 'Everfrost',
         questNPC  = 'Mannis McGuyett',
         ent1      = { zone = 'everfrost', path = {}, y = -828, x = -5458, door = 0 },
         ent2Names = { 'Hushed Banquet', 'Heart of the Menagerie' },
@@ -116,6 +121,7 @@ local CAMPS = {
         label     = "Mistmoore's Catacombs (Butcherblock)",
         -- entrances are in Lesser Faydark
         campZone  = 'butcher',
+        magusSay  = 'Butcherblock',
         questNPC  = 'Xyzelauna',
         -- Ent1 (switch 7) is the crypt entrance, Ent2 (switch 10) is the grave entrance.
         ent1      = { zone = 'lfaydark', path = { 'gfaydark', 'lfaydark' }, y = -759.1, x = 3832.8, z = 2.5, door = 7 },
@@ -130,6 +136,7 @@ local CAMPS = {
         label     = 'Rujarkian Hills (East Commonlands)',
         -- entrance is in South Ro
         campZone  = 'ecommons',
+        magusSay  = 'East Commonlands',
         questNPC  = 'Periac Windfell',
         -- switch 1 = RUJPORTAL701 (switch 6, HUT1, is just a hut next to it)
         ent1      = { zone = 'sro', path = { 'nro', 'oasis', 'sro' }, y = -2111.9, x = 1331.6, z = -68.3, door = 1 },
@@ -144,6 +151,7 @@ local CAMPS = {
         label     = 'Takish-Hiz (North Ro)',
         -- entrance is in North Ro itself
         campZone  = 'nro',
+        magusSay  = 'North Ro',
         questNPC  = 'Escon Quickbow',
         ent1      = { zone = 'nro', path = {}, y = -956.2, x = 119.7, z = -61.4, door = 3 },
         map        = { continent = 1, waypoint = 'East Commonlands' },
@@ -253,7 +261,7 @@ local function loadConfig()
     settings.riskIndex = tonumber(data.riskIndex) or settings.riskIndex
     settings.typeIndex = tonumber(data.typeIndex) or settings.typeIndex
     settings.maxClearMin = tonumber(data.maxClearMin) or settings.maxClearMin
-    if CAMPS[data.fallbackCamp] or data.fallbackCamp == 'auto' or data.fallbackCamp == 'none' then
+    if CAMPS[data.fallbackCamp] or data.fallbackCamp == 'random' or data.fallbackCamp == 'none' then
         settings.fallbackCamp = data.fallbackCamp
     end
 end
@@ -438,11 +446,16 @@ end
 -- only during a fallback loop
 local function camp() return CAMPS[state.campKey or settings.camp] end
 
+-- The camp to run one loop at when the recruiter at key refuses (nil = stop)
 local function fallbackFor(key)
     local fb = settings.fallbackCamp
-    if fb == 'auto' then fb = (key == 'ec') and 'sro' or 'ec' end
-    if fb == key or not CAMPS[fb] then return nil end
-    return fb
+    if fb == 'none' then return nil end
+    if CAMPS[fb] and fb ~= key then return fb end
+    local others = {}
+    for _, k in ipairs(CAMP_ORDER) do
+        if k ~= key then table.insert(others, k) end
+    end
+    return others[math.random(#others)]
 end
 
 local function npcText()
@@ -802,11 +815,10 @@ end
 
 local function adventureLoop()
     local home = settings.camp
-    local fallback = fallbackFor(home)
     local onFallback = false
     state.campKey = home
     preflight()
-    log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, fallback or 'none')
+    log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, settings.fallbackCamp)
     getToCamp()
 
     while true do
@@ -822,12 +834,19 @@ local function adventureLoop()
 
         if not got then
             -- run one loop at the fallback camp, then come back here
-            if onFallback or not fallback then
+            local fallback = not onFallback and fallbackFor(home)
+            if not fallback then
                 fail("Couldn't get an adventure from %s. If you already have one, start with skip. Ending.", c.questNPC)
             end
             log("Couldn't get an adventure at [%s], running one loop at [%s] instead.", home, fallback)
             onFallback = true
             state.campKey = fallback
+            -- the Magus right here ports straight to the other camp; the Bazaar
+            -- route in getToCamp is only a backup if that doesn't work
+            local fc = camp()
+            if not inZone(fc.campZone) then
+                useMagus({ say = fc.magusSay, name = 'Magus', exit = fc.retMagus and fc.retMagus.exit })
+            end
             getToCamp()
         else
             if c.campSpot then leaveCamp() end
@@ -947,12 +966,12 @@ local function ldonCommand(...)
         end
     elseif cmd == 'fallback' then
         local fb = (args[2] or ''):lower()
-        if CAMPS[fb] or fb == 'auto' or fb == 'none' then
+        if CAMPS[fb] or fb == 'random' or fb == 'none' then
             settings.fallbackCamp = fb
             saveConfig()
             log('Fallback camp set to [%s].', fb)
         else
-            log('Fallback camp is [%s]. Use: /ldon fallback <sro|ep|bm|ec|nro|auto|none>', settings.fallbackCamp)
+            log('Fallback camp is [%s]. Use: /ldon fallback <sro|ep|bm|ec|nro|random|none>', settings.fallbackCamp)
         end
     elseif cmd == 'status' then
         log('%s | camp [%s] | runs %d | %s', state.active and 'Running' or 'Idle', settings.camp, state.runs, state.step)
@@ -966,7 +985,7 @@ local function ldonCommand(...)
         requestStop()
         state.isRunning = false
     else
-        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|auto|none>|status|show|hide|toggle|quit]')
+        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
     end
 end
 
@@ -1038,8 +1057,8 @@ end
 local CAMP_LABELS = {}
 for i, key in ipairs(CAMP_ORDER) do CAMP_LABELS[i] = string.format('%s - %s', key, CAMPS[key].label) end
 
-local FALLBACK_KEYS = { 'auto', 'none' }
-local FALLBACK_LABELS = { 'auto - ec (sro when the camp is ec)', 'none - just stop' }
+local FALLBACK_KEYS = { 'random', 'none' }
+local FALLBACK_LABELS = { 'random - any other camp', 'none - just stop' }
 for _, key in ipairs(CAMP_ORDER) do
     table.insert(FALLBACK_KEYS, key)
     table.insert(FALLBACK_LABELS, string.format('%s - %s', key, CAMPS[key].label))
@@ -1163,6 +1182,7 @@ end
 -- ============================================================================
 -- MAIN
 -- ============================================================================
+math.randomseed(os.time())
 loadConfig()
 mq.unbind('/ldon')
 mq.bind('/ldon', ldonCommand)

@@ -76,7 +76,7 @@ General settings are at the top of `Sub Main` in `ldon.mac`:
 - `CharName`: optional. Set it to restrict the macro to one character.
 - `RiskIndex` and `TypeIndex`: positions in the adventure window dropdowns. The defaults are 2 (High) and 3 (Mob Count).
 - `MaxClearTime`: how long to wait for the adventure to complete before leaving anyway.
-- `FallbackCamp`: if the recruiter refuses an adventure three times, run one loop at this camp and then go back to the original one. Empty means `ec`, or `sro` when the camp is `ec`. Set it to `none` to just stop. In the Lua version it's the "If refused, run" dropdown or `/ldon fallback <camp|auto|none>`.
+- `FallbackCamp`: if the recruiter refuses an adventure three times, take the Magus at the camp to another camp, run one loop there, and then go back to the original camp. Empty means a random other camp. Set it to `none` to just stop. In the Lua version it's the "If refused, run" dropdown or `/ldon fallback <camp|random|none>`.
 
 Per-camp settings (recruiter, portal location and switch ID, waypoint, Magus phrases) are in `Sub SetCamp`.
 
