@@ -7,17 +7,19 @@
 -- the adventure completes, leaves through the Bazaar and returns to camp.
 -- Compatible with MacroQuest LuaJIT (Lua 5.1 safe).
 --
--- Run via:  /lua run triune_ldon [camp] [skip]
+-- Run via:  /lua run triune_ldon [camp] [skip] [loop]
 --   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 --         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 --   skip: already have an adventure and standing at the recruiter,
 --         so don't request one on the first loop
+--   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
+--         and round), starting at <camp>
 --   If the recruiter refuses an adventure, a Magus ports me to another camp
 --   (random unless a fallback camp is set), one loop is run there, then it goes back.
 --   Passing a camp starts the loop right away; with no arguments the window
 --   opens idle so you can pick a camp and press Start.
 --
--- Commands:  /ldon start [camp] [skip] | stop | camp <name> | status
+-- Commands:  /ldon start [camp] [skip] [loop] | stop | camp <name> | status
 --            /ldon fallback <camp|random|none>
 --            /ldon show | hide | toggle | quit
 -- Requires MQ2Nav, MQ2MoveUtils, a navmesh for every zone on the route, the
@@ -213,6 +215,7 @@ local state = {
     startRequested = false,
     stopRequested = false,
     skipGet = false,
+    rotate = false,        -- loop: one adventure at each camp in turn
     useEnt2 = false,
     advWon = false,
     died = false,
@@ -874,12 +877,37 @@ local function getToCamp()
     end
 end
 
+-- The camp after key in CAMP_ORDER, wrapping round
+local function nextInRotation(key)
+    for i, k in ipairs(CAMP_ORDER) do
+        if k == key then return CAMP_ORDER[i % #CAMP_ORDER + 1] end
+    end
+    return CAMP_ORDER[1]
+end
+
+-- Port to a camp by the Magus right here (the Bazaar route in getToCamp is
+-- only a backup if that doesn't work)
+local function goToCamp(key)
+    state.campKey = key
+    local fc = camp()
+    if not inZone(fc.campZone) then
+        useMagus({ say = fc.magusSay, name = 'Magus', exit = fc.retMagus and fc.retMagus.exit })
+    end
+    getToCamp()
+end
+
 local function adventureLoop()
     local home = settings.camp
     local onFallback = false
+    local refusals = 0
     state.campKey = home
     preflight()
-    log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, settings.fallbackCamp)
+    if state.rotate then
+        log('Looping through every camp (%s), starting at [%s] with recruiter %s.',
+            table.concat(CAMP_ORDER, ' '), home, camp().questNPC)
+    else
+        log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, settings.fallbackCamp)
+    end
     getToCamp()
 
     while true do
@@ -892,8 +920,18 @@ local function adventureLoop()
             got = getAdventure()
         end
         state.skipGet = false
+        if got then refusals = 0 end
 
-        if not got then
+        if not got and state.rotate then
+            -- looping through every camp: a refusal just moves on to the next camp
+            refusals = refusals + 1
+            if refusals >= #CAMP_ORDER then
+                fail('Every camp refused an adventure. If you already have one, start with skip. Ending.')
+            end
+            local nxt = nextInRotation(state.campKey)
+            log("Couldn't get an adventure at [%s], moving on to [%s].", state.campKey, nxt)
+            goToCamp(nxt)
+        elseif not got then
             -- run one loop at the fallback camp, then come back here
             local fallback = not onFallback and fallbackFor(home)
             if not fallback then
@@ -901,14 +939,7 @@ local function adventureLoop()
             end
             log("Couldn't get an adventure at [%s], running one loop at [%s] instead.", home, fallback)
             onFallback = true
-            state.campKey = fallback
-            -- the Magus right here ports straight to the other camp; the Bazaar
-            -- route in getToCamp is only a backup if that doesn't work
-            local fc = camp()
-            if not inZone(fc.campZone) then
-                useMagus({ say = fc.magusSay, name = 'Magus', exit = fc.retMagus and fc.retMagus.exit })
-            end
-            getToCamp()
+            goToCamp(fallback)
         else
             if c.campSpot then leaveCamp() end
             if state.useEnt2 then
@@ -927,6 +958,11 @@ local function adventureLoop()
                 log('Fallback loop done, heading back to [%s].', home)
                 onFallback = false
                 state.campKey = home
+            end
+            -- looping through every camp: the trip back goes to the next one
+            if state.rotate then
+                state.campKey = nextInRotation(state.campKey)
+                log('Next camp: [%s].', state.campKey)
             end
             leaveDungeon()
             returnToCamp()
@@ -958,7 +994,7 @@ local function runSession()
     setStep('Idle')
 end
 
-local function requestStart(campName, skip)
+local function requestStart(campName, skip, rotate)
     if state.active then
         log('Already running camp [%s]. Use /ldon stop first.', settings.camp)
         return
@@ -972,6 +1008,7 @@ local function requestStart(campName, skip)
         saveConfig()
     end
     state.skipGet = skip and true or false
+    if rotate ~= nil then state.rotate = rotate and true or false end
     state.startRequested = true
 end
 
@@ -1000,23 +1037,29 @@ end)
 -- ============================================================================
 -- COMMANDS
 -- ============================================================================
-local function parseStartArgs(a, b)
-    local campName, skip = nil, false
-    for _, v in ipairs({ a, b }) do
-        if v and v ~= '' then
+local function parseStartArgs(a, b, c)
+    local campName, skip, rotate = nil, false, false
+    for _, v in ipairs({ a or '', b or '', c or '' }) do
+        if v ~= '' then
             v = v:lower()
-            if v == 'skip' then skip = true else campName = v end
+            if v == 'skip' then
+                skip = true
+            elseif v == 'loop' then
+                rotate = true
+            else
+                campName = v
+            end
         end
     end
-    return campName, skip
+    return campName, skip, rotate
 end
 
 local function ldonCommand(...)
     local args = { ... }
     local cmd = (args[1] or ''):lower()
     if cmd == 'start' or cmd == 'run' then
-        local campName, skip = parseStartArgs(args[2], args[3])
-        requestStart(campName, skip)
+        local campName, skip, rotate = parseStartArgs(args[2], args[3], args[4])
+        requestStart(campName, skip, rotate)
     elseif cmd == 'stop' then
         requestStop()
     elseif cmd == 'camp' then
@@ -1051,7 +1094,7 @@ local function ldonCommand(...)
         requestStop()
         state.isRunning = false
     else
-        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
+        print(TAG .. 'usage: /ldon [start [camp] [skip] [loop]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
     end
 end
 
@@ -1214,6 +1257,8 @@ local function DrawLDoNUI()
 
         local skip, sChanged = ImGui.Checkbox('Skip first request (already have an adventure)##ldonSkip', state.skipGet)
         if sChanged then state.skipGet = skip end
+        local rot, rotChanged = ImGui.Checkbox('Loop through every camp, starting at this one##ldonLoop', state.rotate)
+        if rotChanged then state.rotate = rot end
         if state.active then ImGui.EndDisabled() end
 
         ImGui.Separator()
@@ -1259,8 +1304,8 @@ log('Loaded v%s -- /ldon start [camp] [skip] to begin, /ldon to show or hide the
 -- /lua run triune_ldon <camp> [skip] starts right away, like /mac ldon <camp> [skip]
 local startArgs = { ... }
 if #startArgs > 0 then
-    local campName, skip = parseStartArgs(startArgs[1], startArgs[2])
-    requestStart(campName or settings.camp, skip)
+    local campName, skip, rotate = parseStartArgs(startArgs[1], startArgs[2], startArgs[3])
+    requestStart(campName or settings.camp, skip, rotate)
 end
 
 while state.isRunning do

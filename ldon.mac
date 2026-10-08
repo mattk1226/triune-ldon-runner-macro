@@ -1,9 +1,11 @@
 | ldon.mac - LDoN adventure loop for the Triune emu server
-| Usage: /mac ldon <camp> [skip]
+| Usage: /mac ldon <camp> [skip] [loop]
 |   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 |         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 |   skip: already have an adventure and standing at the recruiter,
 |         so don't request one on the first loop
+|   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
+|         and round), starting at <camp>
 | If the recruiter refuses an adventure, a Magus ports me to another camp
 | (random unless FallbackCamp is set), one loop is run there, and then it goes back.
 | Start in the camp's zone. Every zone the loop passes through needs a navmesh.
@@ -17,7 +19,7 @@
 #event HitIn   "#*# YOU for #*# point#*# of damage#*#"
 #event MissIn  "#*# YOU, but #*#"
 
-Sub Main(string a1, string a2)
+Sub Main(string a1, string a2, string a3)
     | ================= GENERAL CONFIG =================
     | Optional safety check: put a character name here and the macro will only
     | run on that character. Leave it empty to run on any character.
@@ -114,6 +116,8 @@ Sub Main(string a1, string a2)
     /declare HomeCamp string outer
     /declare OnFallback bool outer FALSE
     /declare NextCamp   string outer
+    /declare Rotate     bool   outer FALSE
+    /declare Refusals   int    outer 0
 
     | a missing argument can arrive as an empty value, so only use real ones
     /if (${Defined[a1]}) {
@@ -121,6 +125,9 @@ Sub Main(string a1, string a2)
     }
     /if (${Defined[a2]}) {
         /if (${a2.Length} && ${a2.NotEqual[NULL]}) /call ParseArg ${a2}
+    }
+    /if (${Defined[a3]}) {
+        /if (${a3.Length} && ${a3.NotEqual[NULL]}) /call ParseArg ${a3}
     }
     /call SetCamp
     /if (${FallbackCamp.Length}) {
@@ -150,7 +157,9 @@ Sub Main(string a1, string a2)
         /endmacro
     }
     | a fallback camp that is the camp being run means "pick another one at random"
-    /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
+    /if (${Rotate}) {
+        /echo Looping through every camp (${AllCamps}), starting at [${Camp}] with recruiter ${QuestNPC}.
+    } else /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
         /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: ${FallbackCamp}).
     } else {
         /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: random).
@@ -166,6 +175,21 @@ Sub Main(string a1, string a2)
             /call GetAdventure
         }
         /varset SkipGet FALSE
+        /if (${GotAdv}) /varset Refusals 0
+        | looping through every camp: a refusal just moves on to the next camp
+        /if (!${GotAdv} && ${Rotate}) {
+            /varcalc Refusals ${Refusals}+1
+            /if (${Refusals}>=5) {
+                /echo Every camp refused an adventure. If you already have one, start with skip. Ending.
+                /endmacro
+            }
+            /call NextInRotation
+            /echo Couldn't get an adventure at [${Camp}], moving on to [${NextCamp}].
+            /call SwitchCamp ${NextCamp}
+            /if (${Zone.ShortName.NotEqual[${CampZone}]}) /call UseMagus to
+            /call GetToCamp
+            /goto :mainloop
+        }
         /if (!${GotAdv}) {
             /if (${OnFallback} || ${FallbackCamp.Equal[none]}) {
                 /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
@@ -202,6 +226,12 @@ Sub Main(string a1, string a2)
             /call SwitchCamp ${HomeCamp}
             /varset OnFallback FALSE
         }
+        | looping through every camp: the trip back goes to the next one
+        /if (${Rotate}) {
+            /call NextInRotation
+            /echo Next camp: [${NextCamp}].
+            /call SwitchCamp ${NextCamp}
+        }
         /call LeaveDungeon
         /call ReturnToCamp
         /varcalc Runs ${Runs}+1
@@ -231,6 +261,25 @@ Sub GetToCamp
     /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
         /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
         /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+| The camp after the current one in AllCamps (wrapping round) into NextCamp
+Sub NextInRotation
+    /declare i int    local 1
+    /declare c string local
+    /varset NextCamp ${AllCamps.Arg[1,|]}
+    :each
+    /varset c ${AllCamps.Arg[${i},|]}
+    /if (${c.Length} && ${c.NotEqual[NULL]}) {
+        /if (${c.Equal[${Camp}]}) {
+            /varset c ${AllCamps.Arg[${Math.Calc[${i}+1].Int},|]}
+            /if (${c.Length} && ${c.NotEqual[NULL]}) /varset NextCamp ${c}
+            /return
+        }
+        /varcalc i ${i}+1
+        /goto :each
     }
 /return
 
@@ -270,6 +319,8 @@ Sub ParseArg(string a)
     /if (!${a.Length} || ${a.Equal[NULL]}) /return
     /if (${a.Equal[skip]}) {
         /varset SkipGet TRUE
+    } else /if (${a.Equal[loop]}) {
+        /varset Rotate TRUE
     } else {
         /varset Camp ${a}
     }
