@@ -12,6 +12,10 @@
 #turbo 40
 #event AdvWon "#*#You have successfully completed your adventure#*#"
 #event Slain  "#*#You have been slain#*#"
+| any hit landing either way, used to spot a mob stuck on the hate list
+#event HitOut  "#*#You #*# for #*# point#*# of damage#*#"
+#event HitIn   "#*# YOU for #*# point#*# of damage#*#"
+#event MissIn  "#*# YOU, but #*#"
 
 Sub Main(string a1, string a2)
     | ================= GENERAL CONFIG =================
@@ -31,6 +35,12 @@ Sub Main(string a1, string a2)
     | only sent once combat is completely over
     /declare PullerOffCmd    string outer /ac stop
     /declare MaxClearTime string outer 90m
+
+    | After the adventure is won: if I'm still in combat with no hits either way
+    | for this many seconds, something is stuck on the hate list (it blocks
+    | Bazaar and Back), so use the first of these I have that's ready to drop aggro.
+    /declare AggroDropAfter int    outer 30
+    /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
 
     | If the recruiter refuses to give an adventure, take a Magus to this camp,
     | run one loop there, then go back to the original camp.
@@ -97,6 +107,7 @@ Sub Main(string a1, string a2)
     /declare SkipGet  bool   outer FALSE
     /declare UseEnt2  bool   outer FALSE
     /declare AdvWon   bool   outer FALSE
+    /declare HitSeen  bool   outer FALSE
     /declare Missing  int    outer 0
     /declare Runs     int    outer 0
     /declare GotAdv   bool   outer FALSE
@@ -1023,6 +1034,7 @@ Sub ClearDungeon
     /declare clearTimer timer local ${MaxClearTime}
     /declare calm       int   local 0
     /declare fightTimer timer local 0
+    /declare quiet      int   local 0
     /varset AdvWon FALSE
     /docommand ${PullerModeCmd}
     /delay 1s
@@ -1040,12 +1052,27 @@ Sub ClearDungeon
 
     | wait until I've been out of combat for 5 seconds straight
     /varset fightTimer 10m
+    | and if a fight goes quiet (no hits either way) for AggroDropAfter seconds,
+    | drop aggro so a stuck mob doesn't block Bazaar and Back
+    /varset HitSeen FALSE
     :fightloop
+        /doevents
         /if (${Me.CombatState.Equal[COMBAT]}) {
             /varset calm 0
+            /if (${HitSeen}) {
+                /varset quiet 0
+            } else {
+                /varcalc quiet ${quiet}+1
+            }
+            /if (${quiet}>=${AggroDropAfter}) {
+                /call DropAggro
+                /varset quiet 0
+            }
         } else {
             /varcalc calm ${calm}+1
+            /varset quiet 0
         }
+        /varset HitSeen FALSE
         /delay 1s
     /if (${calm}<5 && ${fightTimer}) /goto :fightloop
     /if (${calm}<5) {
@@ -1055,6 +1082,37 @@ Sub ClearDungeon
 
     /docommand ${PullerOffCmd}
     /delay 2s
+/return
+
+| ---------------------------------------------------------
+| Use the first aggro drop in AggroDropList that I have and is ready
+| (AAs like Fading Memories / Imitate Death, or a skill like Feign Death)
+Sub DropAggro
+    /declare i int    local 1
+    /declare a string local
+    :next
+    /varset a ${AggroDropList.Arg[${i},|]}
+    /if (${a.Length} && ${a.NotEqual[NULL]}) {
+        /if (${Me.AltAbility[${a}]} && ${Me.AltAbilityReady[${a}]}) {
+            /echo In combat with no hits for ${AggroDropAfter}s, using ${a} to drop aggro.
+            /alt activate ${Me.AltAbility[${a}].ID}
+            /goto :used
+        }
+        /if (${Me.Ability[${a}]} && ${Me.AbilityReady[${a}]}) {
+            /echo In combat with no hits for ${AggroDropAfter}s, using ${a} to drop aggro.
+            /doability "${a}"
+            /goto :used
+        }
+        /varcalc i ${i}+1
+        /goto :next
+    }
+    /echo In combat with no hits for ${AggroDropAfter}s, but none of these is ready: ${AggroDropList}
+    /return
+    :used
+    /delay 5s ${Me.CombatState.NotEqual[COMBAT]}
+    /delay 2s
+    | feign death abilities leave me on the floor
+    /if (${Me.Feigning}) /stand
 /return
 
 | ---------------------------------------------------------
@@ -1149,6 +1207,18 @@ Sub MapPort
 | ---------------------------------------------------------
 Sub Event_AdvWon
     /varset AdvWon TRUE
+/return
+
+Sub Event_HitOut
+    /varset HitSeen TRUE
+/return
+
+Sub Event_HitIn
+    /varset HitSeen TRUE
+/return
+
+Sub Event_MissIn
+    /varset HitSeen TRUE
 /return
 
 Sub Event_Slain

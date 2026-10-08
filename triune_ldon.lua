@@ -57,6 +57,12 @@ local PULLER_MANUAL_CMD = '/ac manual'
 -- only sent once combat is completely over
 local PULLER_OFF_CMD    = '/ac stop'
 
+-- After the adventure is won: if I'm still in combat with no hits either way
+-- for this many seconds, something is stuck on the hate list (it blocks Bazaar
+-- and Back), so use the first of these I have that's ready to drop aggro.
+local AGGRO_DROP_AFTER_SEC = 30
+local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
+
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
 local BAZAAR_AA_ID  = 331
 local MAP_Y, MAP_X, MAP_Z = -646.5, 2.9, 4.8
@@ -210,6 +216,7 @@ local state = {
     useEnt2 = false,
     advWon = false,
     died = false,
+    lastHit = 0,
     runs = 0,
     step = 'Idle',
     startedAt = 0,
@@ -654,6 +661,32 @@ local function enterDungeon()
     sleep(5000)
 end
 
+-- Use the first aggro drop in AGGRO_DROP_LIST that I have and is ready
+-- (AAs like Fading Memories / Imitate Death, or a skill like Feign Death)
+local function dropAggro()
+    for _, a in ipairs(AGGRO_DROP_LIST) do
+        local aaId = tlo(function()
+            if mq.TLO.Me.AltAbility(a)() and mq.TLO.Me.AltAbilityReady(a)() then
+                return mq.TLO.Me.AltAbility(a).ID()
+            end
+        end)
+        local skill = not aaId and tlo(function()
+            return mq.TLO.Me.Ability(a)() and mq.TLO.Me.AbilityReady(a)()
+        end, false)
+        if aaId or skill then
+            log('In combat with no hits for %ds, using %s to drop aggro.', AGGRO_DROP_AFTER_SEC, a)
+            if aaId then mq.cmdf('/alt activate %d', aaId) else mq.cmdf('/doability "%s"', a) end
+            waitFor(5000, function() return mq.TLO.Me.CombatState() ~= 'COMBAT' end)
+            sleep(2000)
+            -- feign death abilities leave me on the floor
+            if tlo(function() return mq.TLO.Me.Feigning() end, false) then mq.cmd('/stand') end
+            return
+        end
+    end
+    log('In combat with no hits for %ds, but none of these is ready: %s', AGGRO_DROP_AFTER_SEC,
+        table.concat(AGGRO_DROP_LIST, ', '))
+end
+
 local function clearDungeon()
     state.advWon = false
     setStep('Clearing dungeon (TAC puller)')
@@ -668,14 +701,22 @@ local function clearDungeon()
     setStep('Finishing combat')
     mq.cmd(PULLER_MANUAL_CMD)
 
-    -- wait until I've been out of combat for 5 seconds straight
+    -- wait until I've been out of combat for 5 seconds straight, and if a
+    -- fight goes quiet (no hits either way) for AGGRO_DROP_AFTER_SEC, drop
+    -- aggro so a stuck mob doesn't block Bazaar and Back
     local calm = 0
     local deadline = mq.gettime() + 10 * 60 * 1000
+    state.lastHit = mq.gettime()
     while calm < 5 and mq.gettime() < deadline do
         if tlo(function() return mq.TLO.Me.CombatState() end, '') == 'COMBAT' then
             calm = 0
+            if mq.gettime() - state.lastHit >= AGGRO_DROP_AFTER_SEC * 1000 then
+                dropAggro()
+                state.lastHit = mq.gettime()
+            end
         else
             calm = calm + 1
+            state.lastHit = mq.gettime()
         end
         sleep(1000)
     end
@@ -927,6 +968,11 @@ end
 mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
     if state.active then state.advWon = true end
 end)
+-- any hit landing either way, used to spot a mob stuck on the hate list
+local function onHit() if state.active then state.lastHit = mq.gettime() end end
+mq.event('LDoN_HitOut', '#*#You #*# for #*# point#*# of damage#*#', onHit)
+mq.event('LDoN_HitIn', '#*# YOU for #*# point#*# of damage#*#', onHit)
+mq.event('LDoN_MissIn', '#*# YOU, but #*#', onHit)
 mq.event('LDoN_Slain', '#*#You have been slain#*#', function()
     if state.active then state.died = true end
 end)
