@@ -1121,6 +1121,9 @@ Sub ClearDungeon
     /declare fightTimer timer local 0
     /declare quiet      int   local 0
     /declare bailTimer  timer local ${BailMinutes}m
+    /declare runTimer   timer local 10s
+    /declare runSends   int   local 1
+    /declare idleTimer  timer local 60s
     /varset AdvWon FALSE
     /varset Bailed FALSE
     /docommand ${PullerModeCmd}
@@ -1130,9 +1133,23 @@ Sub ClearDungeon
     /varset HitSeen FALSE
     :clearloop
         /doevents
+        | Triune pauses itself when it handles the zone-in, and in a laggy zone
+        | that can land after my run command. Send run again a few times early
+        | on, and again whenever a minute goes by with no hits ("already
+        | running" is harmless).
+        /if (!${runTimer} && ${runSends}<4) {
+            /docommand ${PullerOnCmd}
+            /varcalc runSends ${runSends}+1
+            /varset runTimer 10s
+        }
+        /if (!${idleTimer}) {
+            /docommand ${PullerOnCmd}
+            /varset idleTimer 60s
+        }
         | with bail on, give up when nothing has been hit for BailMinutes
         /if (${HitSeen}) {
             /varset bailTimer ${BailMinutes}m
+            /varset idleTimer 60s
             /varset HitSeen FALSE
         }
         /if (${BailOn} && !${bailTimer}) {

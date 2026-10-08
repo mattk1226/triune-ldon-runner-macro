@@ -729,9 +729,22 @@ local function clearDungeon()
 
     state.bailed = false
     state.lastHit = mq.gettime()
+    local started = mq.gettime()
+    local runSends, lastRunAt = 1, mq.gettime()
     waitFor(settings.maxClearMin * 60 * 1000, function()
+        local now = mq.gettime()
+        -- Triune pauses itself when it handles the zone-in, and in a laggy zone
+        -- that can land after my run command. Send run again a few times early
+        -- on, and again whenever a minute goes by with no hits ("already
+        -- running" is harmless).
+        if (runSends < 4 and now - started >= runSends * 10000)
+            or (now - state.lastHit >= 60000 and now - lastRunAt >= 60000) then
+            mq.cmd(PULLER_ON_CMD)
+            runSends = runSends + 1
+            lastRunAt = now
+        end
         -- with bail on, give up when nothing has been hit for BAIL_AFTER_MIN
-        if state.bail and mq.gettime() - state.lastHit >= BAIL_AFTER_MIN * 60 * 1000 then
+        if state.bail and now - state.lastHit >= BAIL_AFTER_MIN * 60 * 1000 then
             state.bailed = true
         end
         return state.advWon or state.bailed
