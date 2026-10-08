@@ -878,8 +878,16 @@ Sub GetAdventure
     /delay 2s ${Target.ID}==${npcID}
     /face fast
 
+    | NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...)
+    /call MakeVisible
     /click right target
     /delay 15s ${Window[AdventureRequestWnd].Open}
+    | no answer: drop any invis that slipped through and try once more
+    /if (!${Window[AdventureRequestWnd].Open}) {
+        /call MakeVisible
+        /click right target
+        /delay 15s ${Window[AdventureRequestWnd].Open}
+    }
     /if (!${Window[AdventureRequestWnd].Open}) {
         /echo Adventure window didn't open. Ending.
         /endmacro
@@ -1015,8 +1023,16 @@ Sub UseMagus(string which)
     /delay 2s ${Target.ID}==${mid}
     /face fast
     /delay 5
+    | NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...)
+    /call MakeVisible
     /say ${phrase}
     /delay 30s ${Zone.ShortName.NotEqual[${startZone}]}
+    | no answer: drop any invis that slipped through and try once more
+    /if (${Zone.ShortName.Equal[${startZone}]}) {
+        /call MakeVisible
+        /say ${phrase}
+        /delay 30s ${Zone.ShortName.NotEqual[${startZone}]}
+    }
     /delay 5s
     /if (${Zone.ShortName.Equal[${startZone}]}) {
         /echo The Magus didn't port me.
@@ -1196,6 +1212,16 @@ Sub ClearDungeon
 
     /docommand ${PullerOffCmd}
     /delay 2s
+/return
+
+| ---------------------------------------------------------
+| Drop invisibility so NPCs will talk to me
+Sub MakeVisible
+    /if (!${Me.Invis}) /return
+    /echo Dropping invisibility so the NPC will answer.
+    /makemevisible
+    /delay 3s !${Me.Invis}
+    /delay 5
 /return
 
 | ---------------------------------------------------------

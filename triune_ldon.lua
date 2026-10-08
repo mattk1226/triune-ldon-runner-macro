@@ -484,6 +484,15 @@ local function npcText()
     return text
 end
 
+-- Drop invisibility so NPCs will talk to me
+local function makeVisible()
+    if not tlo(function() return mq.TLO.Me.Invis() end, false) then return end
+    log('Dropping invisibility so the NPC will answer.')
+    mq.cmd('/makemevisible')
+    waitFor(3000, function() return not mq.TLO.Me.Invis() end)
+    sleep(500)
+end
+
 local function getAdventure()
     local c = camp()
     setStep('Requesting adventure from %s', c.questNPC)
@@ -511,8 +520,13 @@ local function getAdventure()
     waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
     mq.cmd('/face fast')
 
-    mq.cmd('/click right target')
-    waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
+    -- NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...);
+    -- if there's no answer, drop any invis that slipped through and try once more
+    for _ = 1, 2 do
+        makeVisible()
+        mq.cmd('/click right target')
+        if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
+    end
     if not windowOpen('AdventureRequestWnd') then fail("Adventure window didn't open. Ending.") end
     local function advChild(name) return mq.TLO.Window('AdventureRequestWnd').Child(name) end
     -- after a bail the old adventure is still mine, so leave it first
@@ -612,8 +626,13 @@ local function useMagus(m)
     waitFor(2000, function() return mq.TLO.Target.ID() == mid end)
     mq.cmd('/face fast')
     sleep(500)
-    mq.cmdf('/say %s', m.say)
-    waitFor(30000, function() return not inZone(startZone) end)
+    -- NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...);
+    -- if there's no answer, drop any invis that slipped through and try once more
+    for _ = 1, 2 do
+        makeVisible()
+        mq.cmdf('/say %s', m.say)
+        if waitFor(30000, function() return not inZone(startZone) end) then break end
+    end
     sleep(5000)
     if inZone(startZone) then
         log("The Magus didn't port me.")
