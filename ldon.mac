@@ -815,14 +815,17 @@ Sub GetAdventure
     /face fast
 
     /click right target
-    /delay 5s ${Window[AdventureRequestWnd].Open}
+    /delay 15s ${Window[AdventureRequestWnd].Open}
     /if (!${Window[AdventureRequestWnd].Open}) {
         /echo Adventure window didn't open. Ending.
         /endmacro
     }
+    | wait for each dropdown to take before the next click (laggy zones)
+    /delay 1s
     /notify AdventureRequestWnd AdvRqst_RiskCombobox listselect ${RiskIndex}
-    /delay 5
+    /delay 5s ${Window[AdventureRequestWnd].Child[AdvRqst_RiskCombobox].GetCurSel}==${RiskIndex}
     /notify AdventureRequestWnd AdvRqst_TypeCombobox listselect ${TypeIndex}
+    /delay 5s ${Window[AdventureRequestWnd].Child[AdvRqst_TypeCombobox].GetCurSel}==${TypeIndex}
     /delay 5
     | The Accept button only lights up when the server offers an adventure.
     | On an error (already have one, not eligible, ...) the server puts the
@@ -832,7 +835,7 @@ Sub GetAdventure
     :request
     /varcalc tries ${tries}+1
     /notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup
-    /delay 10s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+    /delay 20s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
     /if (!${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}) {
         /echo Adventure request ${tries} of 3 was refused: ${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text}
         /if (${tries}<3) {
@@ -1166,22 +1169,32 @@ Sub MapPort
         /endmacro
     }
 
-    | Click the map and pick this camp's waypoint
+    | Click the map and pick this camp's waypoint. A full Bazaar can lag badly,
+    | so wait for each window and list to be ready before the next click.
+    /varset tries 0
+    :mapclick
+    /varcalc tries ${tries}+1
     /doortarget id ${MapSwitchID}
-    /delay 5
+    /delay 5s ${DoorTarget.ID}==${MapSwitchID}
     /face fast door
+    /delay 5
     /click left door
-    /delay 5s ${Window[WaypointsWnd].Open}
+    /delay 15s ${Window[WaypointsWnd].Open}
+    /if (!${Window[WaypointsWnd].Open} && ${tries}<3) /goto :mapclick
     /if (!${Window[WaypointsWnd].Open}) {
         /echo The map window didn't open. Ending.
         /endmacro
     }
+    /delay 1s
     /notify WaypointsWnd ContinentsList listselect ${MapContinent}
+    /delay 10s ${Window[WaypointsWnd].Child[ContinentsList].GetCurSel}==${MapContinent}
+    /delay 10s ${Window[WaypointsWnd].Child[WaypointsList].Items}
     /delay 1s
     | a camp can give the row number directly; otherwise look the waypoint up by name
     /if (${MapRow}) {
         /varset row ${MapRow}
     } else {
+        /delay 10s ${Window[WaypointsWnd].Child[WaypointsList].List[=${MapWaypoint}]}
         /varset row ${Window[WaypointsWnd].Child[WaypointsList].List[=${MapWaypoint}]}
     }
     /if (!${row}) {
@@ -1189,9 +1202,12 @@ Sub MapPort
         /endmacro
     }
     /notify WaypointsWnd WaypointsList listselect ${row}
+    /delay 5s ${Window[WaypointsWnd].Child[WaypointsList].GetCurSel}==${row}
     /delay 5
     /notify WaypointsWnd SelectedWaypointButton leftmouseup
-    /delay 2s
+    | wait for a confirmation box, or for the port itself
+    /delay 10s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open} || ${Zone.ShortName.NotEqual[bazaar]})
+    /delay 5
     | answer a confirmation box if one pops up
     /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup
     /if (${Window[LargeDialogWindow].Open}) /notify LargeDialogWindow LDW_YesButton leftmouseup

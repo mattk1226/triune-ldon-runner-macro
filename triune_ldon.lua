@@ -501,11 +501,15 @@ local function getAdventure()
     mq.cmd('/face fast')
 
     mq.cmd('/click right target')
-    waitFor(5000, function() return windowOpen('AdventureRequestWnd') end)
+    waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
     if not windowOpen('AdventureRequestWnd') then fail("Adventure window didn't open. Ending.") end
+    -- wait for each dropdown to take before the next click (laggy zones)
+    local function advChild(name) return mq.TLO.Window('AdventureRequestWnd').Child(name) end
+    sleep(1000)
     mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
-    sleep(500)
+    waitFor(5000, function() return advChild('AdvRqst_RiskCombobox').GetCurSel() == settings.riskIndex end)
     mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
+    waitFor(5000, function() return advChild('AdvRqst_TypeCombobox').GetCurSel() == settings.typeIndex end)
     sleep(500)
 
     -- The Accept button only lights up when the server offers an adventure.
@@ -518,7 +522,7 @@ local function getAdventure()
     local offered = false
     for attempt = 1, 3 do
         mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
-        if waitFor(10000, acceptEnabled) then
+        if waitFor(20000, acceptEnabled) then
             offered = true
             break
         end
@@ -755,24 +759,40 @@ local function mapPort()
     end
     if distTo(MAP_Y, MAP_X) > 25 then fail("Couldn't get to the map from here. Ending.") end
 
-    -- Click the map and pick this camp's waypoint
-    mq.cmdf('/doortarget id %d', MAP_SWITCH_ID)
-    sleep(500)
-    mq.cmd('/face fast door')
-    mq.cmd('/click left door')
-    waitFor(5000, function() return windowOpen('WaypointsWnd') end)
+    -- Click the map and pick this camp's waypoint. A full Bazaar can lag badly,
+    -- so wait for each window and list to be ready before the next click.
+    local function child(name) return mq.TLO.Window('WaypointsWnd').Child(name) end
+    for _ = 1, 3 do
+        mq.cmdf('/doortarget id %d', MAP_SWITCH_ID)
+        waitFor(5000, function() return mq.TLO.DoorTarget.ID() == MAP_SWITCH_ID end)
+        mq.cmd('/face fast door')
+        sleep(500)
+        mq.cmd('/click left door')
+        if waitFor(15000, function() return windowOpen('WaypointsWnd') end) then break end
+    end
     if not windowOpen('WaypointsWnd') then fail("The map window didn't open. Ending.") end
+    sleep(1000)
     mq.cmdf('/notify WaypointsWnd ContinentsList listselect %d', c.map.continent)
+    waitFor(10000, function() return child('ContinentsList').GetCurSel() == c.map.continent end)
+    waitFor(10000, function() return (child('WaypointsList').Items() or 0) > 0 end)
     sleep(1000)
     -- a camp can give the row number directly; otherwise look the waypoint up by name
-    local row = c.map.row or tlo(function()
-        return mq.TLO.Window('WaypointsWnd').Child('WaypointsList').List('=' .. c.map.waypoint)()
-    end, 0)
+    local function findRow() return child('WaypointsList').List('=' .. c.map.waypoint)() end
+    local row = c.map.row
+    if not row then
+        waitFor(10000, function() return (findRow() or 0) > 0 end)
+        row = tlo(findRow, 0)
+    end
     if not row or row == 0 then fail("Couldn't find %s in the waypoint list. Ending.", c.map.waypoint) end
     mq.cmdf('/notify WaypointsWnd WaypointsList listselect %d', row)
+    waitFor(5000, function() return child('WaypointsList').GetCurSel() == row end)
     sleep(500)
     mq.cmd('/notify WaypointsWnd SelectedWaypointButton leftmouseup')
-    sleep(2000)
+    -- wait for a confirmation box, or for the port itself
+    waitFor(10000, function()
+        return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') or not inZone('bazaar')
+    end)
+    sleep(500)
     -- answer a confirmation box if one pops up
     if windowOpen('ConfirmationDialogBox') then mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup') end
     if windowOpen('LargeDialogWindow') then mq.cmd('/notify LargeDialogWindow LDW_YesButton leftmouseup') end
