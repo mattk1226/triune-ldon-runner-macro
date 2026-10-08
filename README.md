@@ -59,6 +59,14 @@ Install: copy `triune_ldon.lua` into your MacroQuest `lua` folder.
 
 Camp, Risk row, Type row and max clear time are saved per character in `config/triune_ldon_<Name>.lua`. Per-camp data is in the `CAMPS` table and the zone crossings are in `ROUTES` at the top of the file. Stopping it, or a failure, leaves the TAC as it was, the same as `/endmacro`. The `ldon_paths.ini` fallback for extra routes is not ported.
 
+## Skipping one unattackable mob (TAC plugin)
+
+Some dungeons have one copy of a mob that can't be attacked, mixed in with normal copies of the same name. For example, one "a feral snow cougar" in Maw of the Menagerie is unattackable. Triune's ignore list works by name, so it would skip all of them.
+
+`tac/ldon_skip.lua` is a Triune plugin that skips just the stuck copy. When Triune has a watched mob targeted, within 40 units, and its HP stays at 100% for 20 seconds, that one spawn goes on Triune's per-spawn ignore, the same as the ignore toggle in the Extended Target window. A mob that has taken any damage is never skipped.
+
+Install: copy `tac/ldon_skip.lua` into your MacroQuest `lua	ac` folder, then restart Triune or press Rescan on its plugin page. The watch list, timing and range are on the plugin's settings page. `/ac ldonskip` skips the current target by hand, and `/ac ldonskip list` shows the watch list. It works with both `ldon.mac` and `triune_ldon.lua`.
+
 ## What one loop does
 
 1. Walks to the recruiter, sets Risk and Type in the adventure window, requests and accepts.
