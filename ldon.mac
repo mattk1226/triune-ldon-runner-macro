@@ -1,11 +1,13 @@
 | ldon.mac - LDoN adventure loop for the Triune emu server
-| Usage: /mac ldon <camp> [skip] [loop]
+| Usage: /mac ldon <camp> [skip] [loop] [bail]
 |   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 |         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 |   skip: already have an adventure and standing at the recruiter,
 |         so don't request one on the first loop
 |   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
 |         and round), starting at <camp>
+|   bail: if nothing has been hit for BailMinutes inside the dungeon (stuck on
+|         a mob or a mesh trap), leave, drop the adventure and get a new one
 | If the recruiter refuses an adventure, a Magus ports me to another camp
 | (random unless FallbackCamp is set), one loop is run there, and then it goes back.
 | Start in the camp's zone. Every zone the loop passes through needs a navmesh.
@@ -19,7 +21,7 @@
 #event HitIn   "#*# YOU for #*# point#*# of damage#*#"
 #event MissIn  "#*# YOU, but #*#"
 
-Sub Main(string a1, string a2, string a3)
+Sub Main(string a1, string a2, string a3, string a4)
     | ================= GENERAL CONFIG =================
     | Optional safety check: put a character name here and the macro will only
     | run on that character. Leave it empty to run on any character.
@@ -42,6 +44,10 @@ Sub Main(string a1, string a2, string a3)
     | for this many seconds, something is stuck on the hate list (it blocks
     | Bazaar and Back), so use the first of these I have that's ready to drop aggro.
     /declare AggroDropAfter int    outer 30
+
+    | With the bail argument: minutes inside the dungeon with no hits either way
+    | before giving up on the adventure (stuck on a mob or a mesh trap)
+    /declare BailMinutes    int    outer 5
     /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
 
     | If the recruiter refuses to give an adventure, take a Magus to this camp,
@@ -117,6 +123,8 @@ Sub Main(string a1, string a2, string a3)
     /declare OnFallback bool outer FALSE
     /declare NextCamp   string outer
     /declare Rotate     bool   outer FALSE
+    /declare BailOn     bool   outer FALSE
+    /declare Bailed     bool   outer FALSE
     /declare Refusals   int    outer 0
 
     | a missing argument can arrive as an empty value, so only use real ones
@@ -128,6 +136,9 @@ Sub Main(string a1, string a2, string a3)
     }
     /if (${Defined[a3]}) {
         /if (${a3.Length} && ${a3.NotEqual[NULL]}) /call ParseArg ${a3}
+    }
+    /if (${Defined[a4]}) {
+        /if (${a4.Length} && ${a4.NotEqual[NULL]}) /call ParseArg ${a4}
     }
     /call SetCamp
     /if (${FallbackCamp.Length}) {
@@ -321,6 +332,8 @@ Sub ParseArg(string a)
         /varset SkipGet TRUE
     } else /if (${a.Equal[loop]}) {
         /varset Rotate TRUE
+    } else /if (${a.Equal[bail]}) {
+        /varset BailOn TRUE
     } else {
         /varset Camp ${a}
     }
@@ -871,6 +884,24 @@ Sub GetAdventure
         /echo Adventure window didn't open. Ending.
         /endmacro
     }
+    | after a bail the old adventure is still mine, so leave it first
+    | (the Decline button is "Leave" while I have one)
+    /if (${Bailed}) {
+        /delay 1s
+        /if (${Window[AdventureRequestWnd].Child[AdvRqst_DeclineButton].Enabled}) {
+            /echo Leaving the unfinished adventure.
+            /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
+            /delay 5s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open})
+            /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup
+            /if (${Window[LargeDialogWindow].Open}) /notify LargeDialogWindow LDW_YesButton leftmouseup
+            /delay 3s
+        }
+        /varset Bailed FALSE
+        /if (!${Window[AdventureRequestWnd].Open}) {
+            /click right target
+            /delay 15s ${Window[AdventureRequestWnd].Open}
+        }
+    }
     | wait for each dropdown to take before the next click (laggy zones)
     /delay 1s
     /notify AdventureRequestWnd AdvRqst_RiskCombobox listselect ${RiskIndex}
@@ -1089,17 +1120,29 @@ Sub ClearDungeon
     /declare calm       int   local 0
     /declare fightTimer timer local 0
     /declare quiet      int   local 0
+    /declare bailTimer  timer local ${BailMinutes}m
     /varset AdvWon FALSE
+    /varset Bailed FALSE
     /docommand ${PullerModeCmd}
     /delay 1s
     /docommand ${PullerOnCmd}
 
+    /varset HitSeen FALSE
     :clearloop
         /doevents
+        | with bail on, give up when nothing has been hit for BailMinutes
+        /if (${HitSeen}) {
+            /varset bailTimer ${BailMinutes}m
+            /varset HitSeen FALSE
+        }
+        /if (${BailOn} && !${bailTimer}) {
+            /echo No hits for ${BailMinutes} minutes (stuck?), giving up on this adventure.
+            /varset Bailed TRUE
+        }
         /delay 1s
-    /if (!${AdvWon} && ${clearTimer}) /goto :clearloop
+    /if (!${AdvWon} && !${Bailed} && ${clearTimer}) /goto :clearloop
 
-    /if (!${AdvWon}) /echo Timed out without a win message, leaving anyway.
+    /if (!${AdvWon} && !${Bailed}) /echo Timed out without a win message, leaving anyway.
 
     | stop pulling, but keep fighting whatever is still on me
     /docommand ${PullerManualCmd}

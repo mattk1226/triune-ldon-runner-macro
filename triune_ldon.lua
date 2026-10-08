@@ -7,19 +7,21 @@
 -- the adventure completes, leaves through the Bazaar and returns to camp.
 -- Compatible with MacroQuest LuaJIT (Lua 5.1 safe).
 --
--- Run via:  /lua run triune_ldon [camp] [skip] [loop]
+-- Run via:  /lua run triune_ldon [camp] [skip] [loop] [bail]
 --   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 --         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 --   skip: already have an adventure and standing at the recruiter,
 --         so don't request one on the first loop
 --   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
 --         and round), starting at <camp>
+--   bail: if nothing has been hit for BAIL_AFTER_MIN inside the dungeon (stuck
+--         on a mob or a mesh trap), leave, drop the adventure and get a new one
 --   If the recruiter refuses an adventure, a Magus ports me to another camp
 --   (random unless a fallback camp is set), one loop is run there, then it goes back.
 --   Passing a camp starts the loop right away; with no arguments the window
 --   opens idle so you can pick a camp and press Start.
 --
--- Commands:  /ldon start [camp] [skip] [loop] | stop | camp <name> | status
+-- Commands:  /ldon start [camp] [skip] [loop] [bail] | stop | camp <name> | status
 --            /ldon fallback <camp|random|none>
 --            /ldon show | hide | toggle | quit
 -- Requires MQ2Nav, MQ2MoveUtils, a navmesh for every zone on the route, the
@@ -63,6 +65,10 @@ local PULLER_OFF_CMD    = '/ac stop'
 -- for this many seconds, something is stuck on the hate list (it blocks Bazaar
 -- and Back), so use the first of these I have that's ready to drop aggro.
 local AGGRO_DROP_AFTER_SEC = 30
+
+-- With bail on: minutes inside the dungeon with no hits either way before
+-- giving up on the adventure (stuck on a mob or a mesh trap)
+local BAIL_AFTER_MIN = 5
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
@@ -216,6 +222,8 @@ local state = {
     stopRequested = false,
     skipGet = false,
     rotate = false,        -- loop: one adventure at each camp in turn
+    bail = false,          -- give up on a stuck adventure
+    bailed = false,        -- the last adventure was given up and is still active
     useEnt2 = false,
     advWon = false,
     died = false,
@@ -506,8 +514,26 @@ local function getAdventure()
     mq.cmd('/click right target')
     waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
     if not windowOpen('AdventureRequestWnd') then fail("Adventure window didn't open. Ending.") end
-    -- wait for each dropdown to take before the next click (laggy zones)
     local function advChild(name) return mq.TLO.Window('AdventureRequestWnd').Child(name) end
+    -- after a bail the old adventure is still mine, so leave it first
+    -- (the Decline button is "Leave" while I have one)
+    if state.bailed then
+        sleep(1000)
+        if tlo(function() return advChild('AdvRqst_DeclineButton').Enabled() end, false) then
+            log('Leaving the unfinished adventure.')
+            mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
+            waitFor(5000, function() return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') end)
+            if windowOpen('ConfirmationDialogBox') then mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup') end
+            if windowOpen('LargeDialogWindow') then mq.cmd('/notify LargeDialogWindow LDW_YesButton leftmouseup') end
+            sleep(3000)
+        end
+        state.bailed = false
+        if not windowOpen('AdventureRequestWnd') then
+            mq.cmd('/click right target')
+            waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
+        end
+    end
+    -- wait for each dropdown to take before the next click (laggy zones)
     sleep(1000)
     mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
     waitFor(5000, function() return advChild('AdvRqst_RiskCombobox').GetCurSel() == settings.riskIndex end)
@@ -701,8 +727,20 @@ local function clearDungeon()
     sleep(1000)
     mq.cmd(PULLER_ON_CMD)
 
-    waitFor(settings.maxClearMin * 60 * 1000, function() return state.advWon end)
-    if not state.advWon then log('Timed out without a win message, leaving anyway.') end
+    state.bailed = false
+    state.lastHit = mq.gettime()
+    waitFor(settings.maxClearMin * 60 * 1000, function()
+        -- with bail on, give up when nothing has been hit for BAIL_AFTER_MIN
+        if state.bail and mq.gettime() - state.lastHit >= BAIL_AFTER_MIN * 60 * 1000 then
+            state.bailed = true
+        end
+        return state.advWon or state.bailed
+    end)
+    if state.bailed and not state.advWon then
+        log('No hits for %d minutes (stuck?), giving up on this adventure.', BAIL_AFTER_MIN)
+    elseif not state.advWon then
+        log('Timed out without a win message, leaving anyway.')
+    end
 
     -- stop pulling, but keep fighting whatever is still on me
     setStep('Finishing combat')
@@ -994,7 +1032,7 @@ local function runSession()
     setStep('Idle')
 end
 
-local function requestStart(campName, skip, rotate)
+local function requestStart(campName, skip, rotate, bail)
     if state.active then
         log('Already running camp [%s]. Use /ldon stop first.', settings.camp)
         return
@@ -1009,6 +1047,7 @@ local function requestStart(campName, skip, rotate)
     end
     state.skipGet = skip and true or false
     if rotate ~= nil then state.rotate = rotate and true or false end
+    if bail ~= nil then state.bail = bail and true or false end
     state.startRequested = true
 end
 
@@ -1037,29 +1076,31 @@ end)
 -- ============================================================================
 -- COMMANDS
 -- ============================================================================
-local function parseStartArgs(a, b, c)
-    local campName, skip, rotate = nil, false, false
-    for _, v in ipairs({ a or '', b or '', c or '' }) do
+local function parseStartArgs(a, b, c, d)
+    local campName, skip, rotate, bail = nil, false, false, false
+    for _, v in ipairs({ a or '', b or '', c or '', d or '' }) do
         if v ~= '' then
             v = v:lower()
             if v == 'skip' then
                 skip = true
             elseif v == 'loop' then
                 rotate = true
+            elseif v == 'bail' then
+                bail = true
             else
                 campName = v
             end
         end
     end
-    return campName, skip, rotate
+    return campName, skip, rotate, bail
 end
 
 local function ldonCommand(...)
     local args = { ... }
     local cmd = (args[1] or ''):lower()
     if cmd == 'start' or cmd == 'run' then
-        local campName, skip, rotate = parseStartArgs(args[2], args[3], args[4])
-        requestStart(campName, skip, rotate)
+        local campName, skip, rotate, bail = parseStartArgs(args[2], args[3], args[4], args[5])
+        requestStart(campName, skip, rotate, bail)
     elseif cmd == 'stop' then
         requestStop()
     elseif cmd == 'camp' then
@@ -1094,7 +1135,7 @@ local function ldonCommand(...)
         requestStop()
         state.isRunning = false
     else
-        print(TAG .. 'usage: /ldon [start [camp] [skip] [loop]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
+        print(TAG .. 'usage: /ldon [start [camp] [skip] [loop] [bail]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
     end
 end
 
@@ -1259,6 +1300,8 @@ local function DrawLDoNUI()
         if sChanged then state.skipGet = skip end
         local rot, rotChanged = ImGui.Checkbox('Loop through every camp, starting at this one##ldonLoop', state.rotate)
         if rotChanged then state.rotate = rot end
+        local bl, blChanged = ImGui.Checkbox(string.format('Give up after %d minutes with no hits##ldonBail', BAIL_AFTER_MIN), state.bail)
+        if blChanged then state.bail = bl end
         if state.active then ImGui.EndDisabled() end
 
         ImGui.Separator()
@@ -1304,8 +1347,8 @@ log('Loaded v%s -- /ldon start [camp] [skip] to begin, /ldon to show or hide the
 -- /lua run triune_ldon <camp> [skip] starts right away, like /mac ldon <camp> [skip]
 local startArgs = { ... }
 if #startArgs > 0 then
-    local campName, skip, rotate = parseStartArgs(startArgs[1], startArgs[2], startArgs[3])
-    requestStart(campName or settings.camp, skip, rotate)
+    local campName, skip, rotate, bail = parseStartArgs(startArgs[1], startArgs[2], startArgs[3], startArgs[4])
+    requestStart(campName or settings.camp, skip, rotate, bail)
 end
 
 while state.isRunning do

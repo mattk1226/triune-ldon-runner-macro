@@ -21,7 +21,7 @@ Copy `ldon.mac` into your MacroQuest `Macros` folder.
 ## Usage
 
 ```
-/mac ldon <camp> [skip] [loop]
+/mac ldon <camp> [skip] [loop] [bail]
 ```
 
 | Camp | Theme | Camp zone | Recruiter |
@@ -38,6 +38,8 @@ With no camp given, it uses `sro`.
 
 `loop` runs one adventure at each camp in turn (sro, ep, bm, ec, nro, then round again), starting at the camp you give. For example, `/mac ldon ec loop` goes ec, nro, sro, ep, bm, ec and so on. After each run, the trip back goes to the next camp. If a recruiter refuses, it moves straight on to the next camp, and it stops only if every camp refuses in a row. The Lua version takes `loop` the same way, or you can tick "Loop through every camp" in its window.
 
+`bail` gives up on an adventure that is stuck. If nothing has been hit either way for 5 minutes inside the dungeon (for example a mob it can't reach, or a mesh trap), it leaves through Bazaar and Back as usual. At the next recruiter it clicks Leave on the old adventure, then requests a new one. The time is `BailMinutes` in the mac and `BAIL_AFTER_MIN` in the Lua version, and the Lua window has a checkbox for it.
+
 You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
 
 Bazaar and Back can be set to the Bazaar or to East Commonlands. If it lands in East Commonlands, the landing zone for every camp, the walk to the Bazaar map is skipped.
@@ -53,7 +55,7 @@ Install: copy `triune_ldon.lua` into your MacroQuest `lua` folder.
 ```
 /lua run triune_ldon            opens the window idle
 /lua run triune_ldon sro skip   starts right away, like /mac ldon sro skip
-/ldon start [camp] [skip] [loop]  start the loop
+/ldon start [camp] [skip] [loop] [bail]  start the loop
 /ldon stop                      stop after the current step (the window stays open)
 /ldon camp <sro|ep|bm|ec|nro>   pick a camp
 /ldon status | show | hide | toggle | quit
