@@ -61,6 +61,10 @@ Sub Main(string a1, string a2, string a3, string a4)
     /declare MapY         float  outer -646.5
     /declare MapX         float  outer 2.9
     /declare MapZ         float  outer 4.8
+    | East Commonlands has the same map (Bazaar and Back can be set to land there)
+    /declare ECMapY       float  outer -1511.4
+    /declare ECMapX       float  outer -184.0
+    /declare ECMapZ       float  outer 4.4
     /declare MapSwitchID  int    outer 146
     | ==================================================
 
@@ -1262,7 +1266,7 @@ Sub LeaveDungeon
     | Bazaar AA
     /delay 3m ${Me.AltAbilityReady[${BazaarAAID}]}
     /alt activate ${BazaarAAID}
-    /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[${LandZone}]})
+    /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[ecommons]} || ${Zone.ShortName.Equal[${LandZone}]})
     /delay 5s
     | Bazaar and Back can be set to East Commonlands; if it already put us in
     | this camp's landing zone, skip the walk to the map
@@ -1270,38 +1274,49 @@ Sub LeaveDungeon
         /echo Bazaar and Back put me in ${LandZone}, skipping the map.
         /return
     }
-    /if (${Zone.ShortName.NotEqual[bazaar]}) {
-        /echo Bazaar and Back didn't take me to the Bazaar or ${LandZone}. Ending.
+    | otherwise use the map there (the Bazaar and East Commonlands both have one)
+    /if (${Zone.ShortName.NotEqual[bazaar]} && ${Zone.ShortName.NotEqual[ecommons]}) {
+        /echo Bazaar and Back didn't take me to the Bazaar, East Commonlands or ${LandZone}. Ending.
         /endmacro
     }
     /call MapPort
 /return
 
 | ---------------------------------------------------------
-| In the Bazaar: walk to the map and port to this camp's waypoint
+| In the Bazaar or East Commonlands: walk to the map and port to this camp's waypoint
 Sub MapPort
-    /declare row   int local 0
-    /declare tries int local 0
+    /declare row   int   local 0
+    /declare tries int   local 0
+    /declare my    float local ${MapY}
+    /declare mx    float local ${MapX}
+    /declare mz    float local ${MapZ}
+    /declare startZone string local ${Zone.ShortName}
+    | the map in East Commonlands is the same, just somewhere else
+    /if (${Zone.ShortName.Equal[ecommons]}) {
+        /varset my ${ECMapY}
+        /varset mx ${ECMapX}
+        /varset mz ${ECMapZ}
+    }
 
     | Walk to the map. The landing spot is random, so try nav, and if it
     | can't start from here, step toward the map and try again.
     :mapwalk
-    /if (${Math.Distance[${MapY},${MapX}]}>15 && ${tries}<15) {
+    /if (${Math.Distance[${my},${mx}]}>15 && ${tries}<15) {
         /varcalc tries ${tries}+1
         /if (${Navigation.MeshLoaded}) {
-            /nav locyxz ${MapY} ${MapX} ${MapZ}
+            /nav locyxz ${my} ${mx} ${mz}
             /delay 1s
             /if (${Navigation.Active}) {
                 /delay 3m !${Navigation.Active}
                 /goto :mapwalk
             }
         }
-        /moveto loc ${MapY} ${MapX}
-        /delay 4s ${Math.Distance[${MapY},${MapX}]}<15
+        /moveto loc ${my} ${mx}
+        /delay 4s ${Math.Distance[${my},${mx}]}<15
         /moveto off
         /goto :mapwalk
     }
-    /if (${Math.Distance[${MapY},${MapX}]}>25) {
+    /if (${Math.Distance[${my},${mx}]}>25) {
         /echo Couldn't get to the map from here. Ending.
         /endmacro
     }
@@ -1343,7 +1358,7 @@ Sub MapPort
     /delay 5
     /notify WaypointsWnd SelectedWaypointButton leftmouseup
     | wait for a confirmation box, or for the port itself
-    /delay 10s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open} || ${Zone.ShortName.NotEqual[bazaar]})
+    /delay 10s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open} || ${Zone.ShortName.NotEqual[${startZone}]})
     /delay 5
     | answer a confirmation box if one pops up
     /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup

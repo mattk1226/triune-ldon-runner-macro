@@ -74,6 +74,8 @@ local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Es
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
 local BAZAAR_AA_ID  = 331
 local MAP_Y, MAP_X, MAP_Z = -646.5, 2.9, 4.8
+-- East Commonlands has the same map (Bazaar and Back can be set to land there)
+local EC_MAP_Y, EC_MAP_X, EC_MAP_Z = -1511.4, -184.0, 4.4
 local MAP_SWITCH_ID = 146
 
 -- ============================================================================
@@ -807,17 +809,21 @@ end
 
 -- In the Bazaar: walk to the map and port to this camp's waypoint
 local function mapPort()
+    -- the map in East Commonlands is the same, just somewhere else
+    local hub = zoneShort()
+    local my, mx, mz = MAP_Y, MAP_X, MAP_Z
+    if hub == 'ecommons' then my, mx, mz = EC_MAP_Y, EC_MAP_X, EC_MAP_Z end
     local c = camp()
     setStep('Bazaar map to %s', c.map.waypoint)
 
     -- Walk to the map. The landing spot is random, so try nav, and if it
     -- can't start from here, step toward the map and try again.
     local tries = 0
-    while distTo(MAP_Y, MAP_X) > 15 and tries < 15 do
+    while distTo(my, mx) > 15 and tries < 15 do
         tries = tries + 1
         local navigated = false
         if meshLoaded() then
-            mq.cmdf('/nav locyxz %.2f %.2f %.2f', MAP_Y, MAP_X, MAP_Z)
+            mq.cmdf('/nav locyxz %.2f %.2f %.2f', my, mx, mz)
             sleep(1000)
             if navActive() then
                 waitFor(3 * 60 * 1000, function() return not navActive() end)
@@ -825,12 +831,12 @@ local function mapPort()
             end
         end
         if not navigated then
-            mq.cmdf('/moveto loc %.2f %.2f', MAP_Y, MAP_X)
-            waitFor(4000, function() return distTo(MAP_Y, MAP_X) < 15 end)
+            mq.cmdf('/moveto loc %.2f %.2f', my, mx)
+            waitFor(4000, function() return distTo(my, mx) < 15 end)
             mq.cmd('/moveto off')
         end
     end
-    if distTo(MAP_Y, MAP_X) > 25 then fail("Couldn't get to the map from here. Ending.") end
+    if distTo(my, mx) > 25 then fail("Couldn't get to the map from here. Ending.") end
 
     -- Click the map and pick this camp's waypoint. A full Bazaar can lag badly,
     -- so wait for each window and list to be ready before the next click.
@@ -863,7 +869,7 @@ local function mapPort()
     mq.cmd('/notify WaypointsWnd SelectedWaypointButton leftmouseup')
     -- wait for a confirmation box, or for the port itself
     waitFor(10000, function()
-        return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') or not inZone('bazaar')
+        return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') or not inZone(hub)
     end)
     sleep(500)
     -- answer a confirmation box if one pops up
@@ -881,7 +887,7 @@ local function leaveDungeon()
     waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
     mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
     local landZone = camp().landZone
-    waitFor(60000, function() return inZone('bazaar') or inZone(landZone) end)
+    waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
     sleep(5000)
     -- Bazaar and Back can be set to East Commonlands; if it already put us in
     -- this camp's landing zone, skip the walk to the map
@@ -889,7 +895,10 @@ local function leaveDungeon()
         log('Bazaar and Back put me in %s, skipping the map.', landZone)
         return
     end
-    if not inZone('bazaar') then fail("Bazaar and Back didn't take me to the Bazaar or %s. Ending.", landZone) end
+    -- otherwise use the map there (the Bazaar and East Commonlands both have one)
+    if not inZone('bazaar') and not inZone('ecommons') then
+        fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+    end
     mapPort()
 end
 
