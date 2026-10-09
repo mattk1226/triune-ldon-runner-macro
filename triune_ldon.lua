@@ -69,6 +69,11 @@ local AGGRO_DROP_AFTER_SEC = 30
 -- With bail on: minutes inside the dungeon with no hits either way before
 -- giving up on the adventure (stuck on a mob or a mesh trap)
 local BAIL_AFTER_MIN = 5
+
+-- Adventures to turn down (the Everfrost meshes can't handle these): if the
+-- offer text names one, decline it and request again. Three bad offers in a
+-- row count as a refusal (fallback camp / next camp).
+local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
@@ -564,15 +569,38 @@ local function getAdventure()
     local function acceptEnabled()
         return mq.TLO.Window('AdventureRequestWnd').Child('AdvRqst_AcceptButton').Enabled()
     end
+    local function avoidHit()
+        local text = npcText():lower()
+        for _, nm in ipairs(AVOID_DUNGEONS) do
+            if text:find(nm:lower(), 1, true) then return nm end
+        end
+    end
     local offered = false
     for attempt = 1, 3 do
         mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
         if waitFor(20000, acceptEnabled) then
-            offered = true
-            break
+            sleep(500)
+            -- turn down an adventure in a dungeon on the avoid list and ask again
+            local hit = avoidHit()
+            if not hit then
+                offered = true
+                break
+            end
+            log('Adventure %d of 3 is in %s, which is on the avoid list. Declining it.', attempt, hit)
+            mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
+            waitFor(5000, function() return not acceptEnabled() end)
+            if attempt < 3 then
+                sleep(3000)
+                if not windowOpen('AdventureRequestWnd') then
+                    makeVisible()
+                    mq.cmd('/click right target')
+                    waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
+                end
+            end
+        else
+            log('Adventure request %d of 3 was refused: %s', attempt, npcText())
+            if attempt < 3 then sleep(5000) end
         end
-        log('Adventure request %d of 3 was refused: %s', attempt, npcText())
-        if attempt < 3 then sleep(5000) end
     end
     if not offered then
         -- the main loop decides whether to try the fallback camp

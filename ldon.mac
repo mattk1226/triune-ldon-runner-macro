@@ -48,6 +48,12 @@ Sub Main(string a1, string a2, string a3, string a4)
     | With the bail argument: minutes inside the dungeon with no hits either way
     | before giving up on the adventure (stuck on a mob or a mesh trap)
     /declare BailMinutes    int    outer 5
+
+    | Adventures to turn down (the Everfrost meshes can't handle these):
+    | if the offer text names one, decline it and request again. Three bad
+    | offers in a row count as a refusal (fallback camp / next camp).
+    /declare AvoidDungeons  string outer Maw of the Menagerie|Spider Den
+    /declare AvoidHit       string outer none
     /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
 
     | If the recruiter refuses to give an adventure, take a Magus to this camp,
@@ -940,6 +946,24 @@ Sub GetAdventure
         /return
     }
     /delay 5
+    | turn down an adventure in a dungeon on the avoid list and ask again
+    /call CheckAvoid
+    /if (${AvoidHit.NotEqual[none]}) {
+        /echo Adventure ${tries} of 3 is in ${AvoidHit}, which is on the avoid list. Declining it.
+        /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
+        /delay 5s !${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+        /if (${tries}<3) {
+            /delay 3s
+            /if (!${Window[AdventureRequestWnd].Open}) {
+                /call MakeVisible
+                /click right target
+                /delay 15s ${Window[AdventureRequestWnd].Open}
+            }
+            /goto :request
+        }
+        /windowstate AdventureRequestWnd close
+        /return
+    }
 
     | Which entrance does this adventure use?
     /varset UseEnt2 FALSE
@@ -1216,6 +1240,24 @@ Sub ClearDungeon
 
     /docommand ${PullerOffCmd}
     /delay 2s
+/return
+
+| ---------------------------------------------------------
+| Set AvoidHit to the AvoidDungeons entry the offered adventure names (or none)
+Sub CheckAvoid
+    /declare i  int    local 1
+    /declare nm string local
+    /varset AvoidHit none
+    :each
+    /varset nm ${AvoidDungeons.Arg[${i},|]}
+    /if (${nm.Length} && ${nm.NotEqual[NULL]}) {
+        /if (${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text.Find[${nm}]}) {
+            /varset AvoidHit ${nm}
+            /return
+        }
+        /varcalc i ${i}+1
+        /goto :each
+    }
 /return
 
 | ---------------------------------------------------------
