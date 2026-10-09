@@ -555,12 +555,15 @@ local function getAdventure()
         end
     end
     -- wait for each dropdown to take before the next click (laggy zones)
-    sleep(1000)
-    mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
-    waitFor(5000, function() return advChild('AdvRqst_RiskCombobox').GetCurSel() == settings.riskIndex end)
-    mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
-    waitFor(5000, function() return advChild('AdvRqst_TypeCombobox').GetCurSel() == settings.typeIndex end)
-    sleep(500)
+    local function setDropdowns()
+        sleep(1000)
+        mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
+        waitFor(5000, function() return advChild('AdvRqst_RiskCombobox').GetCurSel() == settings.riskIndex end)
+        mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
+        waitFor(5000, function() return advChild('AdvRqst_TypeCombobox').GetCurSel() == settings.typeIndex end)
+        sleep(500)
+    end
+    setDropdowns()
 
     -- The Accept button only lights up when the server offers an adventure.
     -- On an error (already have one, not eligible, ...) the server puts the
@@ -590,12 +593,23 @@ local function getAdventure()
             mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
             waitFor(5000, function() return not acceptEnabled() end)
             if attempt < 3 then
-                sleep(3000)
-                if not windowOpen('AdventureRequestWnd') then
+                -- after Decline the window greys everything out, so close it and
+                -- talk to the recruiter again for a fresh one
+                sleep(2000)
+                mq.cmd('/windowstate AdventureRequestWnd close')
+                waitFor(5000, function() return not windowOpen('AdventureRequestWnd') end)
+                sleep(1000)
+                mq.cmdf('/target id %d', npcID)
+                waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
+                for _ = 1, 2 do
                     makeVisible()
                     mq.cmd('/click right target')
-                    waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
+                    if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
                 end
+                if not windowOpen('AdventureRequestWnd') then
+                    fail("Adventure window didn't open again after declining. Ending.")
+                end
+                setDropdowns()
             end
         else
             log('Adventure request %d of 3 was refused: %s', attempt, npcText())

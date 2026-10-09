@@ -921,6 +921,7 @@ Sub GetAdventure
         }
     }
     | wait for each dropdown to take before the next click (laggy zones)
+    :setup
     /delay 1s
     /notify AdventureRequestWnd AdvRqst_RiskCombobox listselect ${RiskIndex}
     /delay 5s ${Window[AdventureRequestWnd].Child[AdvRqst_RiskCombobox].GetCurSel}==${RiskIndex}
@@ -953,13 +954,27 @@ Sub GetAdventure
         /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
         /delay 5s !${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
         /if (${tries}<3) {
-            /delay 3s
+            | after Decline the window greys everything out, so close it and
+            | talk to the recruiter again for a fresh one
+            /delay 2s
+            /windowstate AdventureRequestWnd close
+            /delay 5s !${Window[AdventureRequestWnd].Open}
+            /delay 1s
+            /target id ${npcID}
+            /delay 2s ${Target.ID}==${npcID}
+            /call MakeVisible
+            /click right target
+            /delay 15s ${Window[AdventureRequestWnd].Open}
             /if (!${Window[AdventureRequestWnd].Open}) {
                 /call MakeVisible
                 /click right target
                 /delay 15s ${Window[AdventureRequestWnd].Open}
             }
-            /goto :request
+            /if (!${Window[AdventureRequestWnd].Open}) {
+                /echo Adventure window didn't open again after declining. Ending.
+                /endmacro
+            }
+            /goto :setup
         }
         /windowstate AdventureRequestWnd close
         /return
