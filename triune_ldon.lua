@@ -71,8 +71,8 @@ local AGGRO_DROP_AFTER_SEC = 30
 local BAIL_AFTER_MIN = 5
 
 -- Adventures to turn down (the Everfrost meshes can't handle these): if the
--- offer text names one, decline it and request again. Three bad offers in a
--- row count as a refusal (fallback camp / next camp).
+-- offer text names one, decline it and request again, as many times as it
+-- takes. Only a real request error moves on to another camp.
 local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
@@ -578,8 +578,11 @@ local function getAdventure()
             if text:find(nm:lower(), 1, true) then return nm end
         end
     end
+    -- Only a real request error counts as a try; an offer on the avoid list is
+    -- declined and asked again as many times as it takes.
     local offered = false
-    for attempt = 1, 3 do
+    local attempt, avoided = 0, 0
+    while attempt < 3 do
         mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
         if waitFor(20000, acceptEnabled) then
             sleep(500)
@@ -589,29 +592,29 @@ local function getAdventure()
                 offered = true
                 break
             end
-            log('Adventure %d of 3 is in %s, which is on the avoid list. Declining it.', attempt, hit)
+            avoided = avoided + 1
+            log('Offer %d is in %s, which is on the avoid list. Declining it and asking again.', avoided, hit)
             mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
             waitFor(5000, function() return not acceptEnabled() end)
-            if attempt < 3 then
-                -- after Decline the window greys everything out, so close it and
-                -- talk to the recruiter again for a fresh one
-                sleep(2000)
-                mq.cmd('/windowstate AdventureRequestWnd close')
-                waitFor(5000, function() return not windowOpen('AdventureRequestWnd') end)
-                sleep(1000)
-                mq.cmdf('/target id %d', npcID)
-                waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
-                for _ = 1, 2 do
-                    makeVisible()
-                    mq.cmd('/click right target')
-                    if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
-                end
-                if not windowOpen('AdventureRequestWnd') then
-                    fail("Adventure window didn't open again after declining. Ending.")
-                end
-                setDropdowns()
+            -- after Decline the window greys everything out, so close it and
+            -- talk to the recruiter again for a fresh one
+            sleep(2000)
+            mq.cmd('/windowstate AdventureRequestWnd close')
+            waitFor(5000, function() return not windowOpen('AdventureRequestWnd') end)
+            sleep(1000)
+            mq.cmdf('/target id %d', npcID)
+            waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
+            for _ = 1, 2 do
+                makeVisible()
+                mq.cmd('/click right target')
+                if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
             end
+            if not windowOpen('AdventureRequestWnd') then
+                fail("Adventure window didn't open again after declining. Ending.")
+            end
+            setDropdowns()
         else
+            attempt = attempt + 1
             log('Adventure request %d of 3 was refused: %s', attempt, npcText())
             if attempt < 3 then sleep(5000) end
         end

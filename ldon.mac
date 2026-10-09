@@ -50,8 +50,8 @@ Sub Main(string a1, string a2, string a3, string a4)
     /declare BailMinutes    int    outer 5
 
     | Adventures to turn down (the Everfrost meshes can't handle these):
-    | if the offer text names one, decline it and request again. Three bad
-    | offers in a row count as a refusal (fallback camp / next camp).
+    | if the offer text names one, decline it and request again, as many
+    | times as it takes. Only a real request error moves on to another camp.
     /declare AvoidDungeons  string outer Maw of the Menagerie|Spider Den
     /declare AvoidHit       string outer none
     /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
@@ -858,6 +858,7 @@ Sub GetAdventure
     /declare i     int    local 1
     /declare nm    string local
     /declare tries int    local 0
+    /declare avoided int  local 0
     /varset GotAdv FALSE
     /if (!${npcID}) {
         /echo Can't find ${QuestNPC}. Ending.
@@ -949,35 +950,34 @@ Sub GetAdventure
     /delay 5
     | turn down an adventure in a dungeon on the avoid list and ask again
     /call CheckAvoid
+    | (as many times as it takes: only a real request error counts as a try)
     /if (${AvoidHit.NotEqual[none]}) {
-        /echo Adventure ${tries} of 3 is in ${AvoidHit}, which is on the avoid list. Declining it.
+        /varcalc avoided ${avoided}+1
+        /echo Offer ${avoided} is in ${AvoidHit}, which is on the avoid list. Declining it and asking again.
         /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
         /delay 5s !${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
-        /if (${tries}<3) {
-            | after Decline the window greys everything out, so close it and
-            | talk to the recruiter again for a fresh one
-            /delay 2s
-            /windowstate AdventureRequestWnd close
-            /delay 5s !${Window[AdventureRequestWnd].Open}
-            /delay 1s
-            /target id ${npcID}
-            /delay 2s ${Target.ID}==${npcID}
+        /varcalc tries ${tries}-1
+        | after Decline the window greys everything out, so close it and
+        | talk to the recruiter again for a fresh one
+        /delay 2s
+        /windowstate AdventureRequestWnd close
+        /delay 5s !${Window[AdventureRequestWnd].Open}
+        /delay 1s
+        /target id ${npcID}
+        /delay 2s ${Target.ID}==${npcID}
+        /call MakeVisible
+        /click right target
+        /delay 15s ${Window[AdventureRequestWnd].Open}
+        /if (!${Window[AdventureRequestWnd].Open}) {
             /call MakeVisible
             /click right target
             /delay 15s ${Window[AdventureRequestWnd].Open}
-            /if (!${Window[AdventureRequestWnd].Open}) {
-                /call MakeVisible
-                /click right target
-                /delay 15s ${Window[AdventureRequestWnd].Open}
-            }
-            /if (!${Window[AdventureRequestWnd].Open}) {
-                /echo Adventure window didn't open again after declining. Ending.
-                /endmacro
-            }
-            /goto :setup
         }
-        /windowstate AdventureRequestWnd close
-        /return
+        /if (!${Window[AdventureRequestWnd].Open}) {
+            /echo Adventure window didn't open again after declining. Ending.
+            /endmacro
+        }
+        /goto :setup
     }
 
     | Which entrance does this adventure use?
