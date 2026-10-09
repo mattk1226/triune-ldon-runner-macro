@@ -1,9 +1,13 @@
 | ldon.mac - LDoN adventure loop for the Triune emu server
-| Usage: /mac ldon <camp> [skip]
+| Usage: /mac ldon <camp> [skip] [loop] [bail]
 |   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 |         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 |   skip: already have an adventure and standing at the recruiter,
 |         so don't request one on the first loop
+|   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
+|         and round), starting at <camp>
+|   bail: if nothing has been hit for BailMinutes inside the dungeon (stuck on
+|         a mob or a mesh trap), leave, drop the adventure and get a new one
 | If the recruiter refuses an adventure, a Magus ports me to another camp
 | (random unless FallbackCamp is set), one loop is run there, and then it goes back.
 | Start in the camp's zone. Every zone the loop passes through needs a navmesh.
@@ -12,8 +16,12 @@
 #turbo 40
 #event AdvWon "#*#You have successfully completed your adventure#*#"
 #event Slain  "#*#You have been slain#*#"
+| any hit landing either way, used to spot a mob stuck on the hate list
+#event HitOut  "#*#You #*# for #*# point#*# of damage#*#"
+#event HitIn   "#*# YOU for #*# point#*# of damage#*#"
+#event MissIn  "#*# YOU, but #*#"
 
-Sub Main(string a1, string a2)
+Sub Main(string a1, string a2, string a3, string a4)
     | ================= GENERAL CONFIG =================
     | Optional safety check: put a character name here and the macro will only
     | run on that character. Leave it empty to run on any character.
@@ -32,6 +40,22 @@ Sub Main(string a1, string a2)
     /declare PullerOffCmd    string outer /ac stop
     /declare MaxClearTime string outer 90m
 
+    | After the adventure is won: if I'm still in combat with no hits either way
+    | for this many seconds, something is stuck on the hate list (it blocks
+    | Bazaar and Back), so use the first of these I have that's ready to drop aggro.
+    /declare AggroDropAfter int    outer 30
+
+    | With the bail argument: minutes inside the dungeon with no hits either way
+    | before giving up on the adventure (stuck on a mob or a mesh trap)
+    /declare BailMinutes    int    outer 5
+
+    | Adventures to turn down (the Everfrost meshes can't handle these):
+    | if the offer text names one, decline it and request again, as many
+    | times as it takes. Only a real request error moves on to another camp.
+    /declare AvoidDungeons  string outer Maw of the Menagerie|Spider Den
+    /declare AvoidHit       string outer none
+    /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
+
     | If the recruiter refuses to give an adventure, take a Magus to this camp,
     | run one loop there, then go back to the original camp.
     | Empty = a random other camp, none = just stop.
@@ -43,6 +67,10 @@ Sub Main(string a1, string a2)
     /declare MapY         float  outer -646.5
     /declare MapX         float  outer 2.9
     /declare MapZ         float  outer 4.8
+    | East Commonlands has the same map (Bazaar and Back can be set to land there)
+    /declare ECMapY       float  outer -1511.4
+    /declare ECMapX       float  outer -184.0
+    /declare ECMapZ       float  outer 4.4
     /declare MapSwitchID  int    outer 146
     | ==================================================
 
@@ -97,12 +125,17 @@ Sub Main(string a1, string a2)
     /declare SkipGet  bool   outer FALSE
     /declare UseEnt2  bool   outer FALSE
     /declare AdvWon   bool   outer FALSE
+    /declare HitSeen  bool   outer FALSE
     /declare Missing  int    outer 0
     /declare Runs     int    outer 0
     /declare GotAdv   bool   outer FALSE
     /declare HomeCamp string outer
     /declare OnFallback bool outer FALSE
     /declare NextCamp   string outer
+    /declare Rotate     bool   outer FALSE
+    /declare BailOn     bool   outer FALSE
+    /declare Bailed     bool   outer FALSE
+    /declare Refusals   int    outer 0
 
     | a missing argument can arrive as an empty value, so only use real ones
     /if (${Defined[a1]}) {
@@ -110,6 +143,12 @@ Sub Main(string a1, string a2)
     }
     /if (${Defined[a2]}) {
         /if (${a2.Length} && ${a2.NotEqual[NULL]}) /call ParseArg ${a2}
+    }
+    /if (${Defined[a3]}) {
+        /if (${a3.Length} && ${a3.NotEqual[NULL]}) /call ParseArg ${a3}
+    }
+    /if (${Defined[a4]}) {
+        /if (${a4.Length} && ${a4.NotEqual[NULL]}) /call ParseArg ${a4}
     }
     /call SetCamp
     /if (${FallbackCamp.Length}) {
@@ -139,7 +178,9 @@ Sub Main(string a1, string a2)
         /endmacro
     }
     | a fallback camp that is the camp being run means "pick another one at random"
-    /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
+    /if (${Rotate}) {
+        /echo Looping through every camp (${AllCamps}), starting at [${Camp}] with recruiter ${QuestNPC}.
+    } else /if (${FallbackCamp.Length} && ${FallbackCamp.NotEqual[${Camp}]}) {
         /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: ${FallbackCamp}).
     } else {
         /echo Running camp [${Camp}] with recruiter ${QuestNPC} (fallback camp: random).
@@ -155,6 +196,21 @@ Sub Main(string a1, string a2)
             /call GetAdventure
         }
         /varset SkipGet FALSE
+        /if (${GotAdv}) /varset Refusals 0
+        | looping through every camp: a refusal just moves on to the next camp
+        /if (!${GotAdv} && ${Rotate}) {
+            /varcalc Refusals ${Refusals}+1
+            /if (${Refusals}>=5) {
+                /echo Every camp refused an adventure. If you already have one, start with skip. Ending.
+                /endmacro
+            }
+            /call NextInRotation
+            /echo Couldn't get an adventure at [${Camp}], moving on to [${NextCamp}].
+            /call SwitchCamp ${NextCamp}
+            /if (${Zone.ShortName.NotEqual[${CampZone}]}) /call UseMagus to
+            /call GetToCamp
+            /goto :mainloop
+        }
         /if (!${GotAdv}) {
             /if (${OnFallback} || ${FallbackCamp.Equal[none]}) {
                 /echo Couldn't get an adventure from ${QuestNPC}. If you already have one, start with skip. Ending.
@@ -191,6 +247,12 @@ Sub Main(string a1, string a2)
             /call SwitchCamp ${HomeCamp}
             /varset OnFallback FALSE
         }
+        | looping through every camp: the trip back goes to the next one
+        /if (${Rotate}) {
+            /call NextInRotation
+            /echo Next camp: [${NextCamp}].
+            /call SwitchCamp ${NextCamp}
+        }
         /call LeaveDungeon
         /call ReturnToCamp
         /varcalc Runs ${Runs}+1
@@ -220,6 +282,25 @@ Sub GetToCamp
     /if (${Zone.ShortName.NotEqual[${CampZone}]}) {
         /echo Couldn't get to ${CampZone} (I'm in ${Zone.ShortName}). Ending.
         /endmacro
+    }
+/return
+
+| ---------------------------------------------------------
+| The camp after the current one in AllCamps (wrapping round) into NextCamp
+Sub NextInRotation
+    /declare i int    local 1
+    /declare c string local
+    /varset NextCamp ${AllCamps.Arg[1,|]}
+    :each
+    /varset c ${AllCamps.Arg[${i},|]}
+    /if (${c.Length} && ${c.NotEqual[NULL]}) {
+        /if (${c.Equal[${Camp}]}) {
+            /varset c ${AllCamps.Arg[${Math.Calc[${i}+1].Int},|]}
+            /if (${c.Length} && ${c.NotEqual[NULL]}) /varset NextCamp ${c}
+            /return
+        }
+        /varcalc i ${i}+1
+        /goto :each
     }
 /return
 
@@ -259,6 +340,10 @@ Sub ParseArg(string a)
     /if (!${a.Length} || ${a.Equal[NULL]}) /return
     /if (${a.Equal[skip]}) {
         /varset SkipGet TRUE
+    } else /if (${a.Equal[loop]}) {
+        /varset Rotate TRUE
+    } else /if (${a.Equal[bail]}) {
+        /varset BailOn TRUE
     } else {
         /varset Camp ${a}
     }
@@ -773,6 +858,7 @@ Sub GetAdventure
     /declare i     int    local 1
     /declare nm    string local
     /declare tries int    local 0
+    /declare avoided int  local 0
     /varset GotAdv FALSE
     /if (!${npcID}) {
         /echo Can't find ${QuestNPC}. Ending.
@@ -803,15 +889,45 @@ Sub GetAdventure
     /delay 2s ${Target.ID}==${npcID}
     /face fast
 
+    | NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...)
+    /call MakeVisible
     /click right target
-    /delay 5s ${Window[AdventureRequestWnd].Open}
+    /delay 15s ${Window[AdventureRequestWnd].Open}
+    | no answer: drop any invis that slipped through and try once more
+    /if (!${Window[AdventureRequestWnd].Open}) {
+        /call MakeVisible
+        /click right target
+        /delay 15s ${Window[AdventureRequestWnd].Open}
+    }
     /if (!${Window[AdventureRequestWnd].Open}) {
         /echo Adventure window didn't open. Ending.
         /endmacro
     }
+    | after a bail the old adventure is still mine, so leave it first
+    | (the Decline button is "Leave" while I have one)
+    /if (${Bailed}) {
+        /delay 1s
+        /if (${Window[AdventureRequestWnd].Child[AdvRqst_DeclineButton].Enabled}) {
+            /echo Leaving the unfinished adventure.
+            /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
+            /delay 5s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open})
+            /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup
+            /if (${Window[LargeDialogWindow].Open}) /notify LargeDialogWindow LDW_YesButton leftmouseup
+            /delay 3s
+        }
+        /varset Bailed FALSE
+        /if (!${Window[AdventureRequestWnd].Open}) {
+            /click right target
+            /delay 15s ${Window[AdventureRequestWnd].Open}
+        }
+    }
+    | wait for each dropdown to take before the next click (laggy zones)
+    :setup
+    /delay 1s
     /notify AdventureRequestWnd AdvRqst_RiskCombobox listselect ${RiskIndex}
-    /delay 5
+    /delay 5s ${Window[AdventureRequestWnd].Child[AdvRqst_RiskCombobox].GetCurSel}==${RiskIndex}
     /notify AdventureRequestWnd AdvRqst_TypeCombobox listselect ${TypeIndex}
+    /delay 5s ${Window[AdventureRequestWnd].Child[AdvRqst_TypeCombobox].GetCurSel}==${TypeIndex}
     /delay 5
     | The Accept button only lights up when the server offers an adventure.
     | On an error (already have one, not eligible, ...) the server puts the
@@ -821,7 +937,7 @@ Sub GetAdventure
     :request
     /varcalc tries ${tries}+1
     /notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup
-    /delay 10s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+    /delay 20s ${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
     /if (!${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}) {
         /echo Adventure request ${tries} of 3 was refused: ${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text}
         /if (${tries}<3) {
@@ -832,6 +948,37 @@ Sub GetAdventure
         /return
     }
     /delay 5
+    | turn down an adventure in a dungeon on the avoid list and ask again
+    /call CheckAvoid
+    | (as many times as it takes: only a real request error counts as a try)
+    /if (${AvoidHit.NotEqual[none]}) {
+        /varcalc avoided ${avoided}+1
+        /echo Offer ${avoided} is in ${AvoidHit}, which is on the avoid list. Declining it and asking again.
+        /notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup
+        /delay 5s !${Window[AdventureRequestWnd].Child[AdvRqst_AcceptButton].Enabled}
+        /varcalc tries ${tries}-1
+        | after Decline the window greys everything out, so close it and
+        | talk to the recruiter again for a fresh one
+        /delay 2s
+        /windowstate AdventureRequestWnd close
+        /delay 5s !${Window[AdventureRequestWnd].Open}
+        /delay 1s
+        /target id ${npcID}
+        /delay 2s ${Target.ID}==${npcID}
+        /call MakeVisible
+        /click right target
+        /delay 15s ${Window[AdventureRequestWnd].Open}
+        /if (!${Window[AdventureRequestWnd].Open}) {
+            /call MakeVisible
+            /click right target
+            /delay 15s ${Window[AdventureRequestWnd].Open}
+        }
+        /if (!${Window[AdventureRequestWnd].Open}) {
+            /echo Adventure window didn't open again after declining. Ending.
+            /endmacro
+        }
+        /goto :setup
+    }
 
     | Which entrance does this adventure use?
     /varset UseEnt2 FALSE
@@ -919,8 +1066,16 @@ Sub UseMagus(string which)
     /delay 2s ${Target.ID}==${mid}
     /face fast
     /delay 5
+    | NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...)
+    /call MakeVisible
     /say ${phrase}
     /delay 30s ${Zone.ShortName.NotEqual[${startZone}]}
+    | no answer: drop any invis that slipped through and try once more
+    /if (${Zone.ShortName.Equal[${startZone}]}) {
+        /call MakeVisible
+        /say ${phrase}
+        /delay 30s ${Zone.ShortName.NotEqual[${startZone}]}
+    }
     /delay 5s
     /if (${Zone.ShortName.Equal[${startZone}]}) {
         /echo The Magus didn't port me.
@@ -1023,29 +1178,74 @@ Sub ClearDungeon
     /declare clearTimer timer local ${MaxClearTime}
     /declare calm       int   local 0
     /declare fightTimer timer local 0
+    /declare quiet      int   local 0
+    /declare bailTimer  timer local ${BailMinutes}m
+    /declare runTimer   timer local 10s
+    /declare runSends   int   local 1
+    /declare idleTimer  timer local 60s
     /varset AdvWon FALSE
+    /varset Bailed FALSE
     /docommand ${PullerModeCmd}
     /delay 1s
     /docommand ${PullerOnCmd}
 
+    /varset HitSeen FALSE
     :clearloop
         /doevents
+        | Triune pauses itself when it handles the zone-in, and in a laggy zone
+        | that can land after my run command. Send run again a few times early
+        | on, and again whenever a minute goes by with no hits ("already
+        | running" is harmless).
+        /if (!${runTimer} && ${runSends}<4) {
+            /docommand ${PullerOnCmd}
+            /varcalc runSends ${runSends}+1
+            /varset runTimer 10s
+        }
+        /if (!${idleTimer}) {
+            /docommand ${PullerOnCmd}
+            /varset idleTimer 60s
+        }
+        | with bail on, give up when nothing has been hit for BailMinutes
+        /if (${HitSeen}) {
+            /varset bailTimer ${BailMinutes}m
+            /varset idleTimer 60s
+            /varset HitSeen FALSE
+        }
+        /if (${BailOn} && !${bailTimer}) {
+            /echo No hits for ${BailMinutes} minutes (stuck?), giving up on this adventure.
+            /varset Bailed TRUE
+        }
         /delay 1s
-    /if (!${AdvWon} && ${clearTimer}) /goto :clearloop
+    /if (!${AdvWon} && !${Bailed} && ${clearTimer}) /goto :clearloop
 
-    /if (!${AdvWon}) /echo Timed out without a win message, leaving anyway.
+    /if (!${AdvWon} && !${Bailed}) /echo Timed out without a win message, leaving anyway.
 
     | stop pulling, but keep fighting whatever is still on me
     /docommand ${PullerManualCmd}
 
     | wait until I've been out of combat for 5 seconds straight
     /varset fightTimer 10m
+    | and if a fight goes quiet (no hits either way) for AggroDropAfter seconds,
+    | drop aggro so a stuck mob doesn't block Bazaar and Back
+    /varset HitSeen FALSE
     :fightloop
+        /doevents
         /if (${Me.CombatState.Equal[COMBAT]}) {
             /varset calm 0
+            /if (${HitSeen}) {
+                /varset quiet 0
+            } else {
+                /varcalc quiet ${quiet}+1
+            }
+            /if (${quiet}>=${AggroDropAfter}) {
+                /call DropAggro
+                /varset quiet 0
+            }
         } else {
             /varcalc calm ${calm}+1
+            /varset quiet 0
         }
+        /varset HitSeen FALSE
         /delay 1s
     /if (${calm}<5 && ${fightTimer}) /goto :fightloop
     /if (${calm}<5) {
@@ -1058,13 +1258,72 @@ Sub ClearDungeon
 /return
 
 | ---------------------------------------------------------
+| Set AvoidHit to the AvoidDungeons entry the offered adventure names (or none)
+Sub CheckAvoid
+    /declare i  int    local 1
+    /declare nm string local
+    /varset AvoidHit none
+    :each
+    /varset nm ${AvoidDungeons.Arg[${i},|]}
+    /if (${nm.Length} && ${nm.NotEqual[NULL]}) {
+        /if (${Window[AdventureRequestWnd].Child[AdvRqst_NPCText].Text.Find[${nm}]}) {
+            /varset AvoidHit ${nm}
+            /return
+        }
+        /varcalc i ${i}+1
+        /goto :each
+    }
+/return
+
+| ---------------------------------------------------------
+| Drop invisibility so NPCs will talk to me
+Sub MakeVisible
+    /if (!${Me.Invis}) /return
+    /echo Dropping invisibility so the NPC will answer.
+    /makemevisible
+    /delay 3s !${Me.Invis}
+    /delay 5
+/return
+
+| ---------------------------------------------------------
+| Use the first aggro drop in AggroDropList that I have and is ready
+| (AAs like Fading Memories / Imitate Death, or a skill like Feign Death)
+Sub DropAggro
+    /declare i int    local 1
+    /declare a string local
+    :next
+    /varset a ${AggroDropList.Arg[${i},|]}
+    /if (${a.Length} && ${a.NotEqual[NULL]}) {
+        /if (${Me.AltAbility[${a}]} && ${Me.AltAbilityReady[${a}]}) {
+            /echo In combat with no hits for ${AggroDropAfter}s, using ${a} to drop aggro.
+            /alt activate ${Me.AltAbility[${a}].ID}
+            /goto :used
+        }
+        /if (${Me.Ability[${a}]} && ${Me.AbilityReady[${a}]}) {
+            /echo In combat with no hits for ${AggroDropAfter}s, using ${a} to drop aggro.
+            /doability "${a}"
+            /goto :used
+        }
+        /varcalc i ${i}+1
+        /goto :next
+    }
+    /echo In combat with no hits for ${AggroDropAfter}s, but none of these is ready: ${AggroDropList}
+    /return
+    :used
+    /delay 5s ${Me.CombatState.NotEqual[COMBAT]}
+    /delay 2s
+    | feign death abilities leave me on the floor
+    /if (${Me.Feigning}) /stand
+/return
+
+| ---------------------------------------------------------
 Sub LeaveDungeon
     /declare startZone string local ${Zone.ShortName}
 
     | Bazaar AA
     /delay 3m ${Me.AltAbilityReady[${BazaarAAID}]}
     /alt activate ${BazaarAAID}
-    /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[${LandZone}]})
+    /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[ecommons]} || ${Zone.ShortName.Equal[${LandZone}]})
     /delay 5s
     | Bazaar and Back can be set to East Commonlands; if it already put us in
     | this camp's landing zone, skip the walk to the map
@@ -1072,58 +1331,79 @@ Sub LeaveDungeon
         /echo Bazaar and Back put me in ${LandZone}, skipping the map.
         /return
     }
-    /if (${Zone.ShortName.NotEqual[bazaar]}) {
-        /echo Bazaar and Back didn't take me to the Bazaar or ${LandZone}. Ending.
+    | otherwise use the map there (the Bazaar and East Commonlands both have one)
+    /if (${Zone.ShortName.NotEqual[bazaar]} && ${Zone.ShortName.NotEqual[ecommons]}) {
+        /echo Bazaar and Back didn't take me to the Bazaar, East Commonlands or ${LandZone}. Ending.
         /endmacro
     }
     /call MapPort
 /return
 
 | ---------------------------------------------------------
-| In the Bazaar: walk to the map and port to this camp's waypoint
+| In the Bazaar or East Commonlands: walk to the map and port to this camp's waypoint
 Sub MapPort
-    /declare row   int local 0
-    /declare tries int local 0
+    /declare row   int   local 0
+    /declare tries int   local 0
+    /declare my    float local ${MapY}
+    /declare mx    float local ${MapX}
+    /declare mz    float local ${MapZ}
+    /declare startZone string local ${Zone.ShortName}
+    | the map in East Commonlands is the same, just somewhere else
+    /if (${Zone.ShortName.Equal[ecommons]}) {
+        /varset my ${ECMapY}
+        /varset mx ${ECMapX}
+        /varset mz ${ECMapZ}
+    }
 
     | Walk to the map. The landing spot is random, so try nav, and if it
     | can't start from here, step toward the map and try again.
     :mapwalk
-    /if (${Math.Distance[${MapY},${MapX}]}>15 && ${tries}<15) {
+    /if (${Math.Distance[${my},${mx}]}>15 && ${tries}<15) {
         /varcalc tries ${tries}+1
         /if (${Navigation.MeshLoaded}) {
-            /nav locyxz ${MapY} ${MapX} ${MapZ}
+            /nav locyxz ${my} ${mx} ${mz}
             /delay 1s
             /if (${Navigation.Active}) {
                 /delay 3m !${Navigation.Active}
                 /goto :mapwalk
             }
         }
-        /moveto loc ${MapY} ${MapX}
-        /delay 4s ${Math.Distance[${MapY},${MapX}]}<15
+        /moveto loc ${my} ${mx}
+        /delay 4s ${Math.Distance[${my},${mx}]}<15
         /moveto off
         /goto :mapwalk
     }
-    /if (${Math.Distance[${MapY},${MapX}]}>25) {
+    /if (${Math.Distance[${my},${mx}]}>25) {
         /echo Couldn't get to the map from here. Ending.
         /endmacro
     }
 
-    | Click the map and pick this camp's waypoint
+    | Click the map and pick this camp's waypoint. A full Bazaar can lag badly,
+    | so wait for each window and list to be ready before the next click.
+    /varset tries 0
+    :mapclick
+    /varcalc tries ${tries}+1
     /doortarget id ${MapSwitchID}
-    /delay 5
+    /delay 5s ${DoorTarget.ID}==${MapSwitchID}
     /face fast door
+    /delay 5
     /click left door
-    /delay 5s ${Window[WaypointsWnd].Open}
+    /delay 15s ${Window[WaypointsWnd].Open}
+    /if (!${Window[WaypointsWnd].Open} && ${tries}<3) /goto :mapclick
     /if (!${Window[WaypointsWnd].Open}) {
         /echo The map window didn't open. Ending.
         /endmacro
     }
+    /delay 1s
     /notify WaypointsWnd ContinentsList listselect ${MapContinent}
+    /delay 10s ${Window[WaypointsWnd].Child[ContinentsList].GetCurSel}==${MapContinent}
+    /delay 10s ${Window[WaypointsWnd].Child[WaypointsList].Items}
     /delay 1s
     | a camp can give the row number directly; otherwise look the waypoint up by name
     /if (${MapRow}) {
         /varset row ${MapRow}
     } else {
+        /delay 10s ${Window[WaypointsWnd].Child[WaypointsList].List[=${MapWaypoint}]}
         /varset row ${Window[WaypointsWnd].Child[WaypointsList].List[=${MapWaypoint}]}
     }
     /if (!${row}) {
@@ -1131,9 +1411,12 @@ Sub MapPort
         /endmacro
     }
     /notify WaypointsWnd WaypointsList listselect ${row}
+    /delay 5s ${Window[WaypointsWnd].Child[WaypointsList].GetCurSel}==${row}
     /delay 5
     /notify WaypointsWnd SelectedWaypointButton leftmouseup
-    /delay 2s
+    | wait for a confirmation box, or for the port itself
+    /delay 10s (${Window[ConfirmationDialogBox].Open} || ${Window[LargeDialogWindow].Open} || ${Zone.ShortName.NotEqual[${startZone}]})
+    /delay 5
     | answer a confirmation box if one pops up
     /if (${Window[ConfirmationDialogBox].Open}) /notify ConfirmationDialogBox Yes_Button leftmouseup
     /if (${Window[LargeDialogWindow].Open}) /notify LargeDialogWindow LDW_YesButton leftmouseup
@@ -1149,6 +1432,18 @@ Sub MapPort
 | ---------------------------------------------------------
 Sub Event_AdvWon
     /varset AdvWon TRUE
+/return
+
+Sub Event_HitOut
+    /varset HitSeen TRUE
+/return
+
+Sub Event_HitIn
+    /varset HitSeen TRUE
+/return
+
+Sub Event_MissIn
+    /varset HitSeen TRUE
 /return
 
 Sub Event_Slain

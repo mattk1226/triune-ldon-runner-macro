@@ -7,17 +7,21 @@
 -- the adventure completes, leaves through the Bazaar and returns to camp.
 -- Compatible with MacroQuest LuaJIT (Lua 5.1 safe).
 --
--- Run via:  /lua run triune_ldon [camp] [skip]
+-- Run via:  /lua run triune_ldon [camp] [skip] [loop] [bail]
 --   camp: sro (Deepest Guk)   ep (Miragul's)   bm (Mistmoore)
 --         ec  (Rujarkian)     nro (Takish-Hiz)        default: sro
 --   skip: already have an adventure and standing at the recruiter,
 --         so don't request one on the first loop
+--   loop: run one adventure at each camp in turn (sro ep bm ec nro, round
+--         and round), starting at <camp>
+--   bail: if nothing has been hit for BAIL_AFTER_MIN inside the dungeon (stuck
+--         on a mob or a mesh trap), leave, drop the adventure and get a new one
 --   If the recruiter refuses an adventure, a Magus ports me to another camp
 --   (random unless a fallback camp is set), one loop is run there, then it goes back.
 --   Passing a camp starts the loop right away; with no arguments the window
 --   opens idle so you can pick a camp and press Start.
 --
--- Commands:  /ldon start [camp] [skip] | stop | camp <name> | status
+-- Commands:  /ldon start [camp] [skip] [loop] [bail] | stop | camp <name> | status
 --            /ldon fallback <camp|random|none>
 --            /ldon show | hide | toggle | quit
 -- Requires MQ2Nav, MQ2MoveUtils, a navmesh for every zone on the route, the
@@ -57,9 +61,26 @@ local PULLER_MANUAL_CMD = '/ac manual'
 -- only sent once combat is completely over
 local PULLER_OFF_CMD    = '/ac stop'
 
+-- After the adventure is won: if I'm still in combat with no hits either way
+-- for this many seconds, something is stuck on the hate list (it blocks Bazaar
+-- and Back), so use the first of these I have that's ready to drop aggro.
+local AGGRO_DROP_AFTER_SEC = 30
+
+-- With bail on: minutes inside the dungeon with no hits either way before
+-- giving up on the adventure (stuck on a mob or a mesh trap)
+local BAIL_AFTER_MIN = 5
+
+-- Adventures to turn down (the Everfrost meshes can't handle these): if the
+-- offer text names one, decline it and request again, as many times as it
+-- takes. Only a real request error moves on to another camp.
+local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
+local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
+
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
 local BAZAAR_AA_ID  = 331
 local MAP_Y, MAP_X, MAP_Z = -646.5, 2.9, 4.8
+-- East Commonlands has the same map (Bazaar and Back can be set to land there)
+local EC_MAP_Y, EC_MAP_X, EC_MAP_Z = -1511.4, -184.0, 4.4
 local MAP_SWITCH_ID = 146
 
 -- ============================================================================
@@ -207,9 +228,13 @@ local state = {
     startRequested = false,
     stopRequested = false,
     skipGet = false,
+    rotate = false,        -- loop: one adventure at each camp in turn
+    bail = false,          -- give up on a stuck adventure
+    bailed = false,        -- the last adventure was given up and is still active
     useEnt2 = false,
     advWon = false,
     died = false,
+    lastHit = 0,
     runs = 0,
     step = 'Idle',
     startedAt = 0,
@@ -466,6 +491,15 @@ local function npcText()
     return text
 end
 
+-- Drop invisibility so NPCs will talk to me
+local function makeVisible()
+    if not tlo(function() return mq.TLO.Me.Invis() end, false) then return end
+    log('Dropping invisibility so the NPC will answer.')
+    mq.cmd('/makemevisible')
+    waitFor(3000, function() return not mq.TLO.Me.Invis() end)
+    sleep(500)
+end
+
 local function getAdventure()
     local c = camp()
     setStep('Requesting adventure from %s', c.questNPC)
@@ -493,13 +527,43 @@ local function getAdventure()
     waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
     mq.cmd('/face fast')
 
-    mq.cmd('/click right target')
-    waitFor(5000, function() return windowOpen('AdventureRequestWnd') end)
+    -- NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...);
+    -- if there's no answer, drop any invis that slipped through and try once more
+    for _ = 1, 2 do
+        makeVisible()
+        mq.cmd('/click right target')
+        if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
+    end
     if not windowOpen('AdventureRequestWnd') then fail("Adventure window didn't open. Ending.") end
-    mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
-    sleep(500)
-    mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
-    sleep(500)
+    local function advChild(name) return mq.TLO.Window('AdventureRequestWnd').Child(name) end
+    -- after a bail the old adventure is still mine, so leave it first
+    -- (the Decline button is "Leave" while I have one)
+    if state.bailed then
+        sleep(1000)
+        if tlo(function() return advChild('AdvRqst_DeclineButton').Enabled() end, false) then
+            log('Leaving the unfinished adventure.')
+            mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
+            waitFor(5000, function() return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') end)
+            if windowOpen('ConfirmationDialogBox') then mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup') end
+            if windowOpen('LargeDialogWindow') then mq.cmd('/notify LargeDialogWindow LDW_YesButton leftmouseup') end
+            sleep(3000)
+        end
+        state.bailed = false
+        if not windowOpen('AdventureRequestWnd') then
+            mq.cmd('/click right target')
+            waitFor(15000, function() return windowOpen('AdventureRequestWnd') end)
+        end
+    end
+    -- wait for each dropdown to take before the next click (laggy zones)
+    local function setDropdowns()
+        sleep(1000)
+        mq.cmdf('/notify AdventureRequestWnd AdvRqst_RiskCombobox listselect %d', settings.riskIndex)
+        waitFor(5000, function() return advChild('AdvRqst_RiskCombobox').GetCurSel() == settings.riskIndex end)
+        mq.cmdf('/notify AdventureRequestWnd AdvRqst_TypeCombobox listselect %d', settings.typeIndex)
+        waitFor(5000, function() return advChild('AdvRqst_TypeCombobox').GetCurSel() == settings.typeIndex end)
+        sleep(500)
+    end
+    setDropdowns()
 
     -- The Accept button only lights up when the server offers an adventure.
     -- On an error (already have one, not eligible, ...) the server puts the
@@ -508,15 +572,52 @@ local function getAdventure()
     local function acceptEnabled()
         return mq.TLO.Window('AdventureRequestWnd').Child('AdvRqst_AcceptButton').Enabled()
     end
-    local offered = false
-    for attempt = 1, 3 do
-        mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
-        if waitFor(10000, acceptEnabled) then
-            offered = true
-            break
+    local function avoidHit()
+        local text = npcText():lower()
+        for _, nm in ipairs(AVOID_DUNGEONS) do
+            if text:find(nm:lower(), 1, true) then return nm end
         end
-        log('Adventure request %d of 3 was refused: %s', attempt, npcText())
-        if attempt < 3 then sleep(5000) end
+    end
+    -- Only a real request error counts as a try; an offer on the avoid list is
+    -- declined and asked again as many times as it takes.
+    local offered = false
+    local attempt, avoided = 0, 0
+    while attempt < 3 do
+        mq.cmd('/notify AdventureRequestWnd AdvRqst_RequestButton leftmouseup')
+        if waitFor(20000, acceptEnabled) then
+            sleep(500)
+            -- turn down an adventure in a dungeon on the avoid list and ask again
+            local hit = avoidHit()
+            if not hit then
+                offered = true
+                break
+            end
+            avoided = avoided + 1
+            log('Offer %d is in %s, which is on the avoid list. Declining it and asking again.', avoided, hit)
+            mq.cmd('/notify AdventureRequestWnd AdvRqst_DeclineButton leftmouseup')
+            waitFor(5000, function() return not acceptEnabled() end)
+            -- after Decline the window greys everything out, so close it and
+            -- talk to the recruiter again for a fresh one
+            sleep(2000)
+            mq.cmd('/windowstate AdventureRequestWnd close')
+            waitFor(5000, function() return not windowOpen('AdventureRequestWnd') end)
+            sleep(1000)
+            mq.cmdf('/target id %d', npcID)
+            waitFor(2000, function() return mq.TLO.Target.ID() == npcID end)
+            for _ = 1, 2 do
+                makeVisible()
+                mq.cmd('/click right target')
+                if waitFor(15000, function() return windowOpen('AdventureRequestWnd') end) then break end
+            end
+            if not windowOpen('AdventureRequestWnd') then
+                fail("Adventure window didn't open again after declining. Ending.")
+            end
+            setDropdowns()
+        else
+            attempt = attempt + 1
+            log('Adventure request %d of 3 was refused: %s', attempt, npcText())
+            if attempt < 3 then sleep(5000) end
+        end
     end
     if not offered then
         -- the main loop decides whether to try the fallback camp
@@ -572,8 +673,13 @@ local function useMagus(m)
     waitFor(2000, function() return mq.TLO.Target.ID() == mid end)
     mq.cmd('/face fast')
     sleep(500)
-    mq.cmdf('/say %s', m.say)
-    waitFor(30000, function() return not inZone(startZone) end)
+    -- NPCs ignore me while I'm invisible (Imitate Death, Fading Memories, ...);
+    -- if there's no answer, drop any invis that slipped through and try once more
+    for _ = 1, 2 do
+        makeVisible()
+        mq.cmdf('/say %s', m.say)
+        if waitFor(30000, function() return not inZone(startZone) end) then break end
+    end
     sleep(5000)
     if inZone(startZone) then
         log("The Magus didn't port me.")
@@ -654,6 +760,32 @@ local function enterDungeon()
     sleep(5000)
 end
 
+-- Use the first aggro drop in AGGRO_DROP_LIST that I have and is ready
+-- (AAs like Fading Memories / Imitate Death, or a skill like Feign Death)
+local function dropAggro()
+    for _, a in ipairs(AGGRO_DROP_LIST) do
+        local aaId = tlo(function()
+            if mq.TLO.Me.AltAbility(a)() and mq.TLO.Me.AltAbilityReady(a)() then
+                return mq.TLO.Me.AltAbility(a).ID()
+            end
+        end)
+        local skill = not aaId and tlo(function()
+            return mq.TLO.Me.Ability(a)() and mq.TLO.Me.AbilityReady(a)()
+        end, false)
+        if aaId or skill then
+            log('In combat with no hits for %ds, using %s to drop aggro.', AGGRO_DROP_AFTER_SEC, a)
+            if aaId then mq.cmdf('/alt activate %d', aaId) else mq.cmdf('/doability "%s"', a) end
+            waitFor(5000, function() return mq.TLO.Me.CombatState() ~= 'COMBAT' end)
+            sleep(2000)
+            -- feign death abilities leave me on the floor
+            if tlo(function() return mq.TLO.Me.Feigning() end, false) then mq.cmd('/stand') end
+            return
+        end
+    end
+    log('In combat with no hits for %ds, but none of these is ready: %s', AGGRO_DROP_AFTER_SEC,
+        table.concat(AGGRO_DROP_LIST, ', '))
+end
+
 local function clearDungeon()
     state.advWon = false
     setStep('Clearing dungeon (TAC puller)')
@@ -661,21 +793,54 @@ local function clearDungeon()
     sleep(1000)
     mq.cmd(PULLER_ON_CMD)
 
-    waitFor(settings.maxClearMin * 60 * 1000, function() return state.advWon end)
-    if not state.advWon then log('Timed out without a win message, leaving anyway.') end
+    state.bailed = false
+    state.lastHit = mq.gettime()
+    local started = mq.gettime()
+    local runSends, lastRunAt = 1, mq.gettime()
+    waitFor(settings.maxClearMin * 60 * 1000, function()
+        local now = mq.gettime()
+        -- Triune pauses itself when it handles the zone-in, and in a laggy zone
+        -- that can land after my run command. Send run again a few times early
+        -- on, and again whenever a minute goes by with no hits ("already
+        -- running" is harmless).
+        if (runSends < 4 and now - started >= runSends * 10000)
+            or (now - state.lastHit >= 60000 and now - lastRunAt >= 60000) then
+            mq.cmd(PULLER_ON_CMD)
+            runSends = runSends + 1
+            lastRunAt = now
+        end
+        -- with bail on, give up when nothing has been hit for BAIL_AFTER_MIN
+        if state.bail and now - state.lastHit >= BAIL_AFTER_MIN * 60 * 1000 then
+            state.bailed = true
+        end
+        return state.advWon or state.bailed
+    end)
+    if state.bailed and not state.advWon then
+        log('No hits for %d minutes (stuck?), giving up on this adventure.', BAIL_AFTER_MIN)
+    elseif not state.advWon then
+        log('Timed out without a win message, leaving anyway.')
+    end
 
     -- stop pulling, but keep fighting whatever is still on me
     setStep('Finishing combat')
     mq.cmd(PULLER_MANUAL_CMD)
 
-    -- wait until I've been out of combat for 5 seconds straight
+    -- wait until I've been out of combat for 5 seconds straight, and if a
+    -- fight goes quiet (no hits either way) for AGGRO_DROP_AFTER_SEC, drop
+    -- aggro so a stuck mob doesn't block Bazaar and Back
     local calm = 0
     local deadline = mq.gettime() + 10 * 60 * 1000
+    state.lastHit = mq.gettime()
     while calm < 5 and mq.gettime() < deadline do
         if tlo(function() return mq.TLO.Me.CombatState() end, '') == 'COMBAT' then
             calm = 0
+            if mq.gettime() - state.lastHit >= AGGRO_DROP_AFTER_SEC * 1000 then
+                dropAggro()
+                state.lastHit = mq.gettime()
+            end
         else
             calm = calm + 1
+            state.lastHit = mq.gettime()
         end
         sleep(1000)
     end
@@ -689,17 +854,21 @@ end
 
 -- In the Bazaar: walk to the map and port to this camp's waypoint
 local function mapPort()
+    -- the map in East Commonlands is the same, just somewhere else
+    local hub = zoneShort()
+    local my, mx, mz = MAP_Y, MAP_X, MAP_Z
+    if hub == 'ecommons' then my, mx, mz = EC_MAP_Y, EC_MAP_X, EC_MAP_Z end
     local c = camp()
     setStep('Bazaar map to %s', c.map.waypoint)
 
     -- Walk to the map. The landing spot is random, so try nav, and if it
     -- can't start from here, step toward the map and try again.
     local tries = 0
-    while distTo(MAP_Y, MAP_X) > 15 and tries < 15 do
+    while distTo(my, mx) > 15 and tries < 15 do
         tries = tries + 1
         local navigated = false
         if meshLoaded() then
-            mq.cmdf('/nav locyxz %.2f %.2f %.2f', MAP_Y, MAP_X, MAP_Z)
+            mq.cmdf('/nav locyxz %.2f %.2f %.2f', my, mx, mz)
             sleep(1000)
             if navActive() then
                 waitFor(3 * 60 * 1000, function() return not navActive() end)
@@ -707,31 +876,47 @@ local function mapPort()
             end
         end
         if not navigated then
-            mq.cmdf('/moveto loc %.2f %.2f', MAP_Y, MAP_X)
-            waitFor(4000, function() return distTo(MAP_Y, MAP_X) < 15 end)
+            mq.cmdf('/moveto loc %.2f %.2f', my, mx)
+            waitFor(4000, function() return distTo(my, mx) < 15 end)
             mq.cmd('/moveto off')
         end
     end
-    if distTo(MAP_Y, MAP_X) > 25 then fail("Couldn't get to the map from here. Ending.") end
+    if distTo(my, mx) > 25 then fail("Couldn't get to the map from here. Ending.") end
 
-    -- Click the map and pick this camp's waypoint
-    mq.cmdf('/doortarget id %d', MAP_SWITCH_ID)
-    sleep(500)
-    mq.cmd('/face fast door')
-    mq.cmd('/click left door')
-    waitFor(5000, function() return windowOpen('WaypointsWnd') end)
+    -- Click the map and pick this camp's waypoint. A full Bazaar can lag badly,
+    -- so wait for each window and list to be ready before the next click.
+    local function child(name) return mq.TLO.Window('WaypointsWnd').Child(name) end
+    for _ = 1, 3 do
+        mq.cmdf('/doortarget id %d', MAP_SWITCH_ID)
+        waitFor(5000, function() return mq.TLO.DoorTarget.ID() == MAP_SWITCH_ID end)
+        mq.cmd('/face fast door')
+        sleep(500)
+        mq.cmd('/click left door')
+        if waitFor(15000, function() return windowOpen('WaypointsWnd') end) then break end
+    end
     if not windowOpen('WaypointsWnd') then fail("The map window didn't open. Ending.") end
+    sleep(1000)
     mq.cmdf('/notify WaypointsWnd ContinentsList listselect %d', c.map.continent)
+    waitFor(10000, function() return child('ContinentsList').GetCurSel() == c.map.continent end)
+    waitFor(10000, function() return (child('WaypointsList').Items() or 0) > 0 end)
     sleep(1000)
     -- a camp can give the row number directly; otherwise look the waypoint up by name
-    local row = c.map.row or tlo(function()
-        return mq.TLO.Window('WaypointsWnd').Child('WaypointsList').List('=' .. c.map.waypoint)()
-    end, 0)
+    local function findRow() return child('WaypointsList').List('=' .. c.map.waypoint)() end
+    local row = c.map.row
+    if not row then
+        waitFor(10000, function() return (findRow() or 0) > 0 end)
+        row = tlo(findRow, 0)
+    end
     if not row or row == 0 then fail("Couldn't find %s in the waypoint list. Ending.", c.map.waypoint) end
     mq.cmdf('/notify WaypointsWnd WaypointsList listselect %d', row)
+    waitFor(5000, function() return child('WaypointsList').GetCurSel() == row end)
     sleep(500)
     mq.cmd('/notify WaypointsWnd SelectedWaypointButton leftmouseup')
-    sleep(2000)
+    -- wait for a confirmation box, or for the port itself
+    waitFor(10000, function()
+        return windowOpen('ConfirmationDialogBox') or windowOpen('LargeDialogWindow') or not inZone(hub)
+    end)
+    sleep(500)
     -- answer a confirmation box if one pops up
     if windowOpen('ConfirmationDialogBox') then mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup') end
     if windowOpen('LargeDialogWindow') then mq.cmd('/notify LargeDialogWindow LDW_YesButton leftmouseup') end
@@ -747,7 +932,7 @@ local function leaveDungeon()
     waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
     mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
     local landZone = camp().landZone
-    waitFor(60000, function() return inZone('bazaar') or inZone(landZone) end)
+    waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
     sleep(5000)
     -- Bazaar and Back can be set to East Commonlands; if it already put us in
     -- this camp's landing zone, skip the walk to the map
@@ -755,7 +940,10 @@ local function leaveDungeon()
         log('Bazaar and Back put me in %s, skipping the map.', landZone)
         return
     end
-    if not inZone('bazaar') then fail("Bazaar and Back didn't take me to the Bazaar or %s. Ending.", landZone) end
+    -- otherwise use the map there (the Bazaar and East Commonlands both have one)
+    if not inZone('bazaar') and not inZone('ecommons') then
+        fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+    end
     mapPort()
 end
 
@@ -813,12 +1001,37 @@ local function getToCamp()
     end
 end
 
+-- The camp after key in CAMP_ORDER, wrapping round
+local function nextInRotation(key)
+    for i, k in ipairs(CAMP_ORDER) do
+        if k == key then return CAMP_ORDER[i % #CAMP_ORDER + 1] end
+    end
+    return CAMP_ORDER[1]
+end
+
+-- Port to a camp by the Magus right here (the Bazaar route in getToCamp is
+-- only a backup if that doesn't work)
+local function goToCamp(key)
+    state.campKey = key
+    local fc = camp()
+    if not inZone(fc.campZone) then
+        useMagus({ say = fc.magusSay, name = 'Magus', exit = fc.retMagus and fc.retMagus.exit })
+    end
+    getToCamp()
+end
+
 local function adventureLoop()
     local home = settings.camp
     local onFallback = false
+    local refusals = 0
     state.campKey = home
     preflight()
-    log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, settings.fallbackCamp)
+    if state.rotate then
+        log('Looping through every camp (%s), starting at [%s] with recruiter %s.',
+            table.concat(CAMP_ORDER, ' '), home, camp().questNPC)
+    else
+        log('Running camp [%s] with recruiter %s (fallback camp: %s).', home, camp().questNPC, settings.fallbackCamp)
+    end
     getToCamp()
 
     while true do
@@ -831,8 +1044,18 @@ local function adventureLoop()
             got = getAdventure()
         end
         state.skipGet = false
+        if got then refusals = 0 end
 
-        if not got then
+        if not got and state.rotate then
+            -- looping through every camp: a refusal just moves on to the next camp
+            refusals = refusals + 1
+            if refusals >= #CAMP_ORDER then
+                fail('Every camp refused an adventure. If you already have one, start with skip. Ending.')
+            end
+            local nxt = nextInRotation(state.campKey)
+            log("Couldn't get an adventure at [%s], moving on to [%s].", state.campKey, nxt)
+            goToCamp(nxt)
+        elseif not got then
             -- run one loop at the fallback camp, then come back here
             local fallback = not onFallback and fallbackFor(home)
             if not fallback then
@@ -840,14 +1063,7 @@ local function adventureLoop()
             end
             log("Couldn't get an adventure at [%s], running one loop at [%s] instead.", home, fallback)
             onFallback = true
-            state.campKey = fallback
-            -- the Magus right here ports straight to the other camp; the Bazaar
-            -- route in getToCamp is only a backup if that doesn't work
-            local fc = camp()
-            if not inZone(fc.campZone) then
-                useMagus({ say = fc.magusSay, name = 'Magus', exit = fc.retMagus and fc.retMagus.exit })
-            end
-            getToCamp()
+            goToCamp(fallback)
         else
             if c.campSpot then leaveCamp() end
             if state.useEnt2 then
@@ -866,6 +1082,11 @@ local function adventureLoop()
                 log('Fallback loop done, heading back to [%s].', home)
                 onFallback = false
                 state.campKey = home
+            end
+            -- looping through every camp: the trip back goes to the next one
+            if state.rotate then
+                state.campKey = nextInRotation(state.campKey)
+                log('Next camp: [%s].', state.campKey)
             end
             leaveDungeon()
             returnToCamp()
@@ -897,7 +1118,7 @@ local function runSession()
     setStep('Idle')
 end
 
-local function requestStart(campName, skip)
+local function requestStart(campName, skip, rotate, bail)
     if state.active then
         log('Already running camp [%s]. Use /ldon stop first.', settings.camp)
         return
@@ -911,6 +1132,8 @@ local function requestStart(campName, skip)
         saveConfig()
     end
     state.skipGet = skip and true or false
+    if rotate ~= nil then state.rotate = rotate and true or false end
+    if bail ~= nil then state.bail = bail and true or false end
     state.startRequested = true
 end
 
@@ -927,6 +1150,11 @@ end
 mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
     if state.active then state.advWon = true end
 end)
+-- any hit landing either way, used to spot a mob stuck on the hate list
+local function onHit() if state.active then state.lastHit = mq.gettime() end end
+mq.event('LDoN_HitOut', '#*#You #*# for #*# point#*# of damage#*#', onHit)
+mq.event('LDoN_HitIn', '#*# YOU for #*# point#*# of damage#*#', onHit)
+mq.event('LDoN_MissIn', '#*# YOU, but #*#', onHit)
 mq.event('LDoN_Slain', '#*#You have been slain#*#', function()
     if state.active then state.died = true end
 end)
@@ -934,23 +1162,31 @@ end)
 -- ============================================================================
 -- COMMANDS
 -- ============================================================================
-local function parseStartArgs(a, b)
-    local campName, skip = nil, false
-    for _, v in ipairs({ a, b }) do
-        if v and v ~= '' then
+local function parseStartArgs(a, b, c, d)
+    local campName, skip, rotate, bail = nil, false, false, false
+    for _, v in ipairs({ a or '', b or '', c or '', d or '' }) do
+        if v ~= '' then
             v = v:lower()
-            if v == 'skip' then skip = true else campName = v end
+            if v == 'skip' then
+                skip = true
+            elseif v == 'loop' then
+                rotate = true
+            elseif v == 'bail' then
+                bail = true
+            else
+                campName = v
+            end
         end
     end
-    return campName, skip
+    return campName, skip, rotate, bail
 end
 
 local function ldonCommand(...)
     local args = { ... }
     local cmd = (args[1] or ''):lower()
     if cmd == 'start' or cmd == 'run' then
-        local campName, skip = parseStartArgs(args[2], args[3])
-        requestStart(campName, skip)
+        local campName, skip, rotate, bail = parseStartArgs(args[2], args[3], args[4], args[5])
+        requestStart(campName, skip, rotate, bail)
     elseif cmd == 'stop' then
         requestStop()
     elseif cmd == 'camp' then
@@ -985,7 +1221,7 @@ local function ldonCommand(...)
         requestStop()
         state.isRunning = false
     else
-        print(TAG .. 'usage: /ldon [start [camp] [skip]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
+        print(TAG .. 'usage: /ldon [start [camp] [skip] [loop] [bail]|stop|camp <sro|ep|bm|ec|nro>|fallback <camp|random|none>|status|show|hide|toggle|quit]')
     end
 end
 
@@ -1148,6 +1384,10 @@ local function DrawLDoNUI()
 
         local skip, sChanged = ImGui.Checkbox('Skip first request (already have an adventure)##ldonSkip', state.skipGet)
         if sChanged then state.skipGet = skip end
+        local rot, rotChanged = ImGui.Checkbox('Loop through every camp, starting at this one##ldonLoop', state.rotate)
+        if rotChanged then state.rotate = rot end
+        local bl, blChanged = ImGui.Checkbox(string.format('Give up after %d minutes with no hits##ldonBail', BAIL_AFTER_MIN), state.bail)
+        if blChanged then state.bail = bl end
         if state.active then ImGui.EndDisabled() end
 
         ImGui.Separator()
@@ -1193,8 +1433,8 @@ log('Loaded v%s -- /ldon start [camp] [skip] to begin, /ldon to show or hide the
 -- /lua run triune_ldon <camp> [skip] starts right away, like /mac ldon <camp> [skip]
 local startArgs = { ... }
 if #startArgs > 0 then
-    local campName, skip = parseStartArgs(startArgs[1], startArgs[2])
-    requestStart(campName or settings.camp, skip)
+    local campName, skip, rotate, bail = parseStartArgs(startArgs[1], startArgs[2], startArgs[3], startArgs[4])
+    requestStart(campName or settings.camp, skip, rotate, bail)
 end
 
 while state.isRunning do

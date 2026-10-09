@@ -21,7 +21,7 @@ Copy `ldon.mac` into your MacroQuest `Macros` folder.
 ## Usage
 
 ```
-/mac ldon <camp> [skip]
+/mac ldon <camp> [skip] [loop] [bail]
 ```
 
 | Camp | Theme | Camp zone | Recruiter |
@@ -35,6 +35,10 @@ Copy `ldon.mac` into your MacroQuest `Macros` folder.
 With no camp given, it uses `sro`.
 
 `skip` is for when you already hold an adventure and are standing at the recruiter. It skips the request on the first loop only.
+
+`loop` runs one adventure at each camp in turn (sro, ep, bm, ec, nro, then round again), starting at the camp you give. For example, `/mac ldon ec loop` goes ec, nro, sro, ep, bm, ec and so on. After each run, the trip back goes to the next camp. If a recruiter refuses, it moves straight on to the next camp, and it stops only if every camp refuses in a row. The Lua version takes `loop` the same way, or you can tick "Loop through every camp" in its window.
+
+`bail` gives up on an adventure that is stuck. If nothing has been hit either way for 5 minutes inside the dungeon (for example a mob it can't reach, or a mesh trap), it leaves through Bazaar and Back as usual. At the next recruiter it clicks Leave on the old adventure, then requests a new one. The time is `BailMinutes` in the mac and `BAIL_AFTER_MIN` in the Lua version, and the Lua window has a checkbox for it.
 
 You can start the macro in the camp's zone, in the Bazaar, or anywhere else. Outside the camp zone it uses Bazaar and Back and the Bazaar map to get to the camp first. Don't start it mid-fight or inside a dungeon you want to finish.
 
@@ -51,7 +55,7 @@ Install: copy `triune_ldon.lua` into your MacroQuest `lua` folder.
 ```
 /lua run triune_ldon            opens the window idle
 /lua run triune_ldon sro skip   starts right away, like /mac ldon sro skip
-/ldon start [camp] [skip]       start the loop
+/ldon start [camp] [skip] [loop] [bail]  start the loop
 /ldon stop                      stop after the current step (the window stays open)
 /ldon camp <sro|ep|bm|ec|nro>   pick a camp
 /ldon status | show | hide | toggle | quit
@@ -84,6 +88,8 @@ General settings are at the top of `Sub Main` in `ldon.mac`:
 - `CharName`: optional. Set it to restrict the macro to one character.
 - `RiskIndex` and `TypeIndex`: positions in the adventure window dropdowns. The defaults are 2 (High) and 3 (Mob Count).
 - `MaxClearTime`: how long to wait for the adventure to complete before leaving anyway.
+- `AggroDropAfter` and `AggroDropList`: after the adventure is won, if you are still in combat with no hits either way for 30 seconds, something is stuck on the hate list and would block Bazaar and Back. It uses the first ability on the list that you have and is ready (Fading Memories, Imitate Death, Death Peace, Escape, Feign Death), then stands up if it feigned. In the Lua version they are `AGGRO_DROP_AFTER_SEC` and `AGGRO_DROP_LIST` at the top of the file.
+- `AvoidDungeons`: adventures to turn down, default Maw of the Menagerie and Spider Den (the Everfrost meshes can't handle them). If the offer names one, it declines, reopens the window and requests again, as many times as it takes. Only a real request error moves on to the fallback camp (or the next camp with `loop`). In the Lua version it's `AVOID_DUNGEONS`.
 - `FallbackCamp`: if the recruiter refuses an adventure three times, take the Magus at the camp to another camp, run one loop there, and then go back to the original camp. Empty means a random other camp. Set it to `none` to just stop. In the Lua version it's the "If refused, run" dropdown or `/ldon fallback <camp|random|none>`.
 
 Per-camp settings (recruiter, portal location and switch ID, waypoint, Magus phrases) are in `Sub SetCamp`.
