@@ -49,10 +49,10 @@ Sub Main(string a1, string a2, string a3, string a4)
     | before giving up on the adventure (stuck on a mob or a mesh trap)
     /declare BailMinutes    int    outer 5
 
-    | Adventures to turn down (the Everfrost meshes can't handle these):
+    | Adventures to turn down (Everfrost and Guk mesh trouble):
     | if the offer text names one, decline it and request again, as many
     | times as it takes. Only a real request error moves on to another camp.
-    /declare AvoidDungeons  string outer Maw of the Menagerie|Spider Den
+    /declare AvoidDungeons  string outer Maw of the Menagerie|Spider Den|Root Garden|Drowning Crypt
     /declare AvoidHit       string outer none
     /declare AggroDropList  string outer Fading Memories|Imitate Death|Death Peace|Escape|Feign Death
 

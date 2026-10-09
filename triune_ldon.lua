@@ -70,10 +70,10 @@ local AGGRO_DROP_AFTER_SEC = 30
 -- giving up on the adventure (stuck on a mob or a mesh trap)
 local BAIL_AFTER_MIN = 5
 
--- Adventures to turn down (the Everfrost meshes can't handle these): if the
+-- Adventures to turn down (Everfrost and Guk mesh trouble): if the
 -- offer text names one, decline it and request again, as many times as it
 -- takes. Only a real request error moves on to another camp.
-local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
+local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den', 'Root Garden', 'Drowning Crypt' }
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
