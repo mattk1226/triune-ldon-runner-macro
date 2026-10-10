@@ -70,10 +70,10 @@ local AGGRO_DROP_AFTER_SEC = 30
 -- giving up on the adventure (stuck on a mob or a mesh trap)
 local BAIL_AFTER_MIN = 5
 
--- Adventures to turn down (the Everfrost meshes can't handle these): if the
+-- Adventures to turn down (Everfrost and Guk mesh trouble): if the
 -- offer text names one, decline it and request again, as many times as it
 -- takes. Only a real request error moves on to another camp.
-local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
+local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den', 'Root Garden', 'Drowning Crypt' }
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
@@ -241,11 +241,24 @@ local state = {
     log = {},
 }
 
+-- Debug log file (config\triune_ldon_debug.log): everything the window log
+-- shows plus every chat line that mentions an adventure
+local function dlog(fmt, ...)
+    local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
+    local f = io.open(mq.configDir .. '/triune_ldon_debug.log', 'a')
+    if f then
+        f:write(string.format('%s run#%d [%s] %s: %s\n', os.date('%Y-%m-%d %H:%M:%S'), state.runs,
+            tostring(state.campKey or settings.camp), tostring(mq.TLO.Zone.ShortName() or '?'), msg))
+        f:close()
+    end
+end
+
 local function log(fmt, ...)
     local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
     print(TAG .. msg)
     table.insert(state.log, os.date('%H:%M:%S') .. '  ' .. msg)
     while #state.log > 60 do table.remove(state.log, 1) end
+    dlog('%s', msg)
 end
 
 local function setStep(fmt, ...)
@@ -789,6 +802,7 @@ end
 local function clearDungeon()
     state.advWon = false
     setStep('Clearing dungeon (TAC puller)')
+    dlog('clear start, sending %s and %s', PULLER_MODE_CMD, PULLER_ON_CMD)
     mq.cmd(PULLER_MODE_CMD)
     sleep(1000)
     mq.cmd(PULLER_ON_CMD)
@@ -819,7 +833,10 @@ local function clearDungeon()
         log('No hits for %d minutes (stuck?), giving up on this adventure.', BAIL_AFTER_MIN)
     elseif not state.advWon then
         log('Timed out without a win message, leaving anyway.')
+    else
+        log("Adventure complete, switching Triune to manual to finish what's on me.")
     end
+    dlog('clear loop done: won=%s bailed=%s, sending %s', tostring(state.advWon), tostring(state.bailed), PULLER_MANUAL_CMD)
 
     -- stop pulling, but keep fighting whatever is still on me
     setStep('Finishing combat')
@@ -831,7 +848,21 @@ local function clearDungeon()
     local calm = 0
     local deadline = mq.gettime() + 10 * 60 * 1000
     state.lastHit = mq.gettime()
+    local chasing = 0
     while calm < 5 and mq.gettime() < deadline do
+        -- Triune should only be finishing what's on me now. If nothing is on
+        -- my extended target list and it's still running somewhere, it's
+        -- still pulling (the manual switch didn't take), so pause it.
+        if tlo(function() return mq.TLO.Me.XTarget() end, 0) == 0 and navActive() then
+            chasing = chasing + 1
+            if chasing == 5 then
+                log('Triune is still pulling after the adventure ended, pausing it.')
+                mq.cmd(PULLER_OFF_CMD)
+                mq.cmd('/nav stop')
+            end
+        else
+            chasing = 0
+        end
         if tlo(function() return mq.TLO.Me.CombatState() end, '') == 'COMBAT' then
             calm = 0
             if mq.gettime() - state.lastHit >= AGGRO_DROP_AFTER_SEC * 1000 then
@@ -848,6 +879,7 @@ local function clearDungeon()
         fail("Still in combat 10 minutes after the adventure ended. Ending here so I don't port out mid-fight.")
     end
 
+    dlog('out of combat, sending %s', PULLER_OFF_CMD)
     mq.cmd(PULLER_OFF_CMD)
     sleep(2000)
 end
@@ -927,24 +959,54 @@ local function mapPort()
     end
 end
 
-local function leaveDungeon()
+-- From the dungeon (or anywhere): Bazaar and Back, then the map if needed.
+-- afterClear: called right after a clear. If Bazaar and Back doesn't get me
+-- out, wait for the finished adventure to send me to my bind point (it does
+-- that 30 minutes after the end) and carry on from there.
+local function leaveDungeon(afterClear)
     setStep('Bazaar and Back')
-    waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
-    mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
     local landZone = camp().landZone
-    waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
-    sleep(5000)
-    -- Bazaar and Back can be set to East Commonlands; if it already put us in
-    -- this camp's landing zone, skip the walk to the map
-    if inZone(landZone) then
-        log('Bazaar and Back put me in %s, skipping the map.', landZone)
-        return
+    local startZone = zoneShort()
+    local waited = false
+    local function bnb()
+        waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
+        mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
+        waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
+        sleep(5000)
     end
-    -- otherwise use the map there (the Bazaar and East Commonlands both have one)
-    if not inZone('bazaar') and not inZone('ecommons') then
-        fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+    bnb()
+    local tries = 1
+    while true do
+        -- Bazaar and Back can be set to East Commonlands; if it already put us
+        -- in this camp's landing zone, skip the walk to the map
+        if inZone(landZone) then
+            log('In %s, skipping the map.', landZone)
+            return
+        end
+        -- otherwise use the map there (the Bazaar and East Commonlands both have one)
+        if inZone('bazaar') or inZone('ecommons') then
+            mapPort()
+            return
+        end
+        if tries >= 3 or not afterClear then
+            fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+        end
+        if inZone(startZone) and not waited then
+            log("Bazaar and Back didn't get me out. Waiting for the adventure to send me to my bind point (up to 35 minutes).")
+            setStep('Waiting for the bind point recall')
+            waited = true
+            waitFor(35 * 60 * 1000, function() return not inZone(startZone) end)
+            sleep(10000)
+            if inZone(startZone) then fail('Still in %s after 35 minutes. Ending.', startZone) end
+            log('Sent to %s, carrying on from here.', zoneShort())
+        else
+            -- somewhere else (my bind point): try Bazaar and Back again from here
+            startZone = zoneShort()
+            tries = tries + 1
+            setStep('Bazaar and Back')
+            bnb()
+        end
     end
-    mapPort()
 end
 
 -- ============================================================================
@@ -1088,7 +1150,7 @@ local function adventureLoop()
                 state.campKey = nextInRotation(state.campKey)
                 log('Next camp: [%s].', state.campKey)
             end
-            leaveDungeon()
+            leaveDungeon(true)
             returnToCamp()
             state.runs = state.runs + 1
             log('Finished run #%d', state.runs)
@@ -1147,9 +1209,32 @@ end
 -- ============================================================================
 -- EVENTS
 -- ============================================================================
-mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
-    if state.active then state.advWon = true end
-end)
+-- The client words the end of an adventure several ways (eqstr_us.txt).
+-- Finishing after the time limit, for the lesser reward, gives the "points
+-- for successfully completing" line instead of the usual one. Running out of
+-- time with no reward left also ends it, so leave then too.
+local function onAdvOver(why, msg)
+    return function(line)
+        -- "Complete your adventure goal within N minutes to receive a lesser
+        -- reward": still worth finishing, so keep clearing
+        if tostring(line or ''):lower():find('lesser reward', 1, true) then
+            dlog('out of time, still clearing for the lesser reward')
+            return
+        end
+        if state.active then state.advWon = true end
+        if msg then log(msg) end
+        dlog(why)
+    end
+end
+mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', onAdvOver('win message seen'))
+mq.event('LDoN_AdvWon2', '#*#for successfully completing the adventure#*#', onAdvOver('win message seen (late completion)'))
+mq.event('LDoN_AdvWon3', '#*#Your Adventure was a success#*#', onAdvOver('win message seen (adventure was a success)'))
+mq.event('LDoN_AdvFail', '#*#You failed to complete your adventure in time#*#',
+    onAdvOver('adventure failed (out of time)', 'The adventure ran out of time with nothing left to win, leaving.'))
+mq.event('LDoN_AdvFail2', '#*#You have failed your Adventure#*#', onAdvOver('adventure failed', 'The adventure failed, leaving.'))
+-- debug: every chat line that mentions an adventure goes to the debug log,
+-- so a completion message worded differently shows up there
+mq.event('LDoN_AdvAny', '#*#adventure#*#', function(line) dlog('chat: %s', line) end)
 -- any hit landing either way, used to spot a mob stuck on the hate list
 local function onHit() if state.active then state.lastHit = mq.gettime() end end
 mq.event('LDoN_HitOut', '#*#You #*# for #*# point#*# of damage#*#', onHit)
