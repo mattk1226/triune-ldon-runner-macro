@@ -1191,7 +1191,7 @@ Sub ClearDungeon
 
     /varset HitSeen FALSE
     :clearloop
-        /doevents
+        /call PumpEvents
         | Triune pauses itself when it handles the zone-in, and in a laggy zone
         | that can land after my run command. Send run again a few times early
         | on, and again whenever a minute goes by with no hits ("already
@@ -1229,7 +1229,7 @@ Sub ClearDungeon
     | drop aggro so a stuck mob doesn't block Bazaar and Back
     /varset HitSeen FALSE
     :fightloop
-        /doevents
+        /call PumpEvents
         /if (${Me.CombatState.Equal[COMBAT]}) {
             /varset calm 0
             /if (${HitSeen}) {
@@ -1430,6 +1430,21 @@ Sub MapPort
 /return
 
 | ---------------------------------------------------------
+| Handle the events that matter, then throw away the leftover hit lines.
+| A plain /doevents only works through the queue one event at a time, so
+| in a busy fight the hit lines piled up faster than they were handled
+| and the "completed your adventure" line sat behind them, unseen.
+Sub PumpEvents
+    /doevents AdvWon
+    /doevents Slain
+    /doevents HitOut
+    /doevents HitIn
+    /doevents MissIn
+    /doevents flush HitOut
+    /doevents flush HitIn
+    /doevents flush MissIn
+/return
+
 Sub Event_AdvWon
     /varset AdvWon TRUE
 /return
