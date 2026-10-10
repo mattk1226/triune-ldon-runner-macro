@@ -241,11 +241,24 @@ local state = {
     log = {},
 }
 
+-- Debug log file (config\triune_ldon_debug.log): everything the window log
+-- shows plus every chat line that mentions an adventure
+local function dlog(fmt, ...)
+    local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
+    local f = io.open(mq.configDir .. '/triune_ldon_debug.log', 'a')
+    if f then
+        f:write(string.format('%s run#%d [%s] %s: %s\n', os.date('%Y-%m-%d %H:%M:%S'), state.runs,
+            tostring(state.campKey or settings.camp), tostring(mq.TLO.Zone.ShortName() or '?'), msg))
+        f:close()
+    end
+end
+
 local function log(fmt, ...)
     local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
     print(TAG .. msg)
     table.insert(state.log, os.date('%H:%M:%S') .. '  ' .. msg)
     while #state.log > 60 do table.remove(state.log, 1) end
+    dlog('%s', msg)
 end
 
 local function setStep(fmt, ...)
@@ -789,6 +802,7 @@ end
 local function clearDungeon()
     state.advWon = false
     setStep('Clearing dungeon (TAC puller)')
+    dlog('clear start, sending %s and %s', PULLER_MODE_CMD, PULLER_ON_CMD)
     mq.cmd(PULLER_MODE_CMD)
     sleep(1000)
     mq.cmd(PULLER_ON_CMD)
@@ -819,7 +833,10 @@ local function clearDungeon()
         log('No hits for %d minutes (stuck?), giving up on this adventure.', BAIL_AFTER_MIN)
     elseif not state.advWon then
         log('Timed out without a win message, leaving anyway.')
+    else
+        log("Adventure complete, switching Triune to manual to finish what's on me.")
     end
+    dlog('clear loop done: won=%s bailed=%s, sending %s', tostring(state.advWon), tostring(state.bailed), PULLER_MANUAL_CMD)
 
     -- stop pulling, but keep fighting whatever is still on me
     setStep('Finishing combat')
@@ -848,6 +865,7 @@ local function clearDungeon()
         fail("Still in combat 10 minutes after the adventure ended. Ending here so I don't port out mid-fight.")
     end
 
+    dlog('out of combat, sending %s', PULLER_OFF_CMD)
     mq.cmd(PULLER_OFF_CMD)
     sleep(2000)
 end
@@ -1149,7 +1167,11 @@ end
 -- ============================================================================
 mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
     if state.active then state.advWon = true end
+    dlog('win message seen')
 end)
+-- debug: every chat line that mentions an adventure goes to the debug log,
+-- so a completion message worded differently shows up there
+mq.event('LDoN_AdvAny', '#*#adventure#*#', function(line) dlog('chat: %s', line) end)
 -- any hit landing either way, used to spot a mob stuck on the hate list
 local function onHit() if state.active then state.lastHit = mq.gettime() end end
 mq.event('LDoN_HitOut', '#*#You #*# for #*# point#*# of damage#*#', onHit)

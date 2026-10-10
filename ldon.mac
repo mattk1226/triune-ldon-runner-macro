@@ -20,6 +20,9 @@
 #event HitOut  "#*#You #*# for #*# point#*# of damage#*#"
 #event HitIn   "#*# YOU for #*# point#*# of damage#*#"
 #event MissIn  "#*# YOU, but #*#"
+| debug: every chat line that mentions an adventure goes to the debug log,
+| so a completion message worded differently shows up there
+#event AdvAny  "#*#adventure#*#"
 
 Sub Main(string a1, string a2, string a3, string a4)
     | ================= GENERAL CONFIG =================
@@ -1185,6 +1188,7 @@ Sub ClearDungeon
     /declare idleTimer  timer local 60s
     /varset AdvWon FALSE
     /varset Bailed FALSE
+    /call DLog "clear start, sending ${PullerModeCmd} and ${PullerOnCmd}"
     /docommand ${PullerModeCmd}
     /delay 1s
     /docommand ${PullerOnCmd}
@@ -1219,6 +1223,8 @@ Sub ClearDungeon
     /if (!${AdvWon} && !${Bailed} && ${clearTimer}) /goto :clearloop
 
     /if (!${AdvWon} && !${Bailed}) /echo Timed out without a win message, leaving anyway.
+    /if (${AdvWon}) /echo Adventure complete, switching Triune to manual to finish what's on me.
+    /call DLog "clear loop done: won=${AdvWon} bailed=${Bailed} timeLeft=${clearTimer}, sending ${PullerManualCmd}"
 
     | stop pulling, but keep fighting whatever is still on me
     /docommand ${PullerManualCmd}
@@ -1250,9 +1256,11 @@ Sub ClearDungeon
     /if (${calm}<5 && ${fightTimer}) /goto :fightloop
     /if (${calm}<5) {
         /echo Still in combat 10 minutes after the adventure ended. Ending here so I don't port out mid-fight.
+        /call DLog "still in combat 10 minutes after the clear, ending"
         /endmacro
     }
 
+    /call DLog "out of combat, sending ${PullerOffCmd}"
     /docommand ${PullerOffCmd}
     /delay 2s
 /return
@@ -1430,6 +1438,12 @@ Sub MapPort
 /return
 
 | ---------------------------------------------------------
+| Debug log: Logs\ldon.log in the MacroQuest folder, with the time
+Sub DLog(string msg)
+    /mqlog ${Time.Time24} run#${Runs} [${Camp}] ${Zone.ShortName}: ${msg}
+/return
+
+| ---------------------------------------------------------
 | Handle the events that matter, then throw away the leftover hit lines.
 | A plain /doevents only works through the queue one event at a time, so
 | in a busy fight the hit lines piled up faster than they were handled
@@ -1437,6 +1451,8 @@ Sub MapPort
 Sub PumpEvents
     /doevents AdvWon
     /doevents Slain
+    /doevents AdvAny
+    /doevents flush AdvAny
     /doevents HitOut
     /doevents HitIn
     /doevents MissIn
@@ -1447,6 +1463,11 @@ Sub PumpEvents
 
 Sub Event_AdvWon
     /varset AdvWon TRUE
+    /call DLog "win message seen"
+/return
+
+Sub Event_AdvAny(string line)
+    /call DLog "chat: ${line}"
 /return
 
 Sub Event_HitOut
