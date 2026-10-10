@@ -1165,10 +1165,29 @@ end
 -- ============================================================================
 -- EVENTS
 -- ============================================================================
-mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
-    if state.active then state.advWon = true end
-    dlog('win message seen')
-end)
+-- The client words the end of an adventure several ways (eqstr_us.txt).
+-- Finishing after the time limit, for the lesser reward, gives the "points
+-- for successfully completing" line instead of the usual one. Running out of
+-- time with no reward left also ends it, so leave then too.
+local function onAdvOver(why, msg)
+    return function(line)
+        -- "Complete your adventure goal within N minutes to receive a lesser
+        -- reward": still worth finishing, so keep clearing
+        if tostring(line or ''):lower():find('lesser reward', 1, true) then
+            dlog('out of time, still clearing for the lesser reward')
+            return
+        end
+        if state.active then state.advWon = true end
+        if msg then log(msg) end
+        dlog(why)
+    end
+end
+mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', onAdvOver('win message seen'))
+mq.event('LDoN_AdvWon2', '#*#for successfully completing the adventure#*#', onAdvOver('win message seen (late completion)'))
+mq.event('LDoN_AdvWon3', '#*#Your Adventure was a success#*#', onAdvOver('win message seen (adventure was a success)'))
+mq.event('LDoN_AdvFail', '#*#You failed to complete your adventure in time#*#',
+    onAdvOver('adventure failed (out of time)', 'The adventure ran out of time with nothing left to win, leaving.'))
+mq.event('LDoN_AdvFail2', '#*#You have failed your Adventure#*#', onAdvOver('adventure failed', 'The adventure failed, leaving.'))
 -- debug: every chat line that mentions an adventure goes to the debug log,
 -- so a completion message worded differently shows up there
 mq.event('LDoN_AdvAny', '#*#adventure#*#', function(line) dlog('chat: %s', line) end)

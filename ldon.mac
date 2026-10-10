@@ -14,7 +14,16 @@
 | Zone crossings are built in (see Sub BuiltInRoute).
 
 #turbo 40
-#event AdvWon "#*#You have successfully completed your adventure#*#"
+| The client words the end of an adventure several ways (eqstr_us.txt).
+| Finishing after the time limit, for the lesser reward, gives the
+| "points for successfully completing" line instead of the usual one.
+#event AdvWon  "#*#You have successfully completed your adventure#*#"
+#event AdvWon2 "#*#for successfully completing the adventure#*#"
+#event AdvWon3 "#*#Your Adventure was a success#*#"
+| out of time with no reward left: the adventure is over, so leave
+| (the out-of-time line that still offers a lesser reward is ignored)
+#event AdvFail "#*#You failed to complete your adventure in time#*#"
+#event AdvFail2 "#*#You have failed your Adventure#*#"
 #event Slain  "#*#You have been slain#*#"
 | any hit landing either way, used to spot a mob stuck on the hate list
 #event HitOut  "#*#You #*# for #*# point#*# of damage#*#"
@@ -1450,6 +1459,10 @@ Sub DLog(string msg)
 | and the "completed your adventure" line sat behind them, unseen.
 Sub PumpEvents
     /doevents AdvWon
+    /doevents AdvWon2
+    /doevents AdvWon3
+    /doevents AdvFail
+    /doevents AdvFail2
     /doevents Slain
     /doevents AdvAny
     /doevents flush AdvAny
@@ -1464,6 +1477,35 @@ Sub PumpEvents
 Sub Event_AdvWon
     /varset AdvWon TRUE
     /call DLog "win message seen"
+/return
+
+Sub Event_AdvWon2
+    /varset AdvWon TRUE
+    /call DLog "win message seen (late completion)"
+/return
+
+Sub Event_AdvWon3
+    /varset AdvWon TRUE
+    /call DLog "win message seen (adventure was a success)"
+/return
+
+| a failed adventure is over too: stop clearing and head back like a win
+Sub Event_AdvFail(string line)
+    | "Complete your adventure goal within N minutes to receive a lesser
+    | reward": still worth finishing, so keep clearing
+    /if (${line.Find[lesser reward]}) {
+        /call DLog "out of time, still clearing for the lesser reward"
+        /return
+    }
+    /echo The adventure ran out of time with nothing left to win, leaving.
+    /varset AdvWon TRUE
+    /call DLog "adventure failed (out of time)"
+/return
+
+Sub Event_AdvFail2
+    /echo The adventure failed, leaving.
+    /varset AdvWon TRUE
+    /call DLog "adventure failed"
 /return
 
 Sub Event_AdvAny(string line)
