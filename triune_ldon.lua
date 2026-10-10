@@ -848,7 +848,21 @@ local function clearDungeon()
     local calm = 0
     local deadline = mq.gettime() + 10 * 60 * 1000
     state.lastHit = mq.gettime()
+    local chasing = 0
     while calm < 5 and mq.gettime() < deadline do
+        -- Triune should only be finishing what's on me now. If nothing is on
+        -- my extended target list and it's still running somewhere, it's
+        -- still pulling (the manual switch didn't take), so pause it.
+        if tlo(function() return mq.TLO.Me.XTarget() end, 0) == 0 and navActive() then
+            chasing = chasing + 1
+            if chasing == 5 then
+                log('Triune is still pulling after the adventure ended, pausing it.')
+                mq.cmd(PULLER_OFF_CMD)
+                mq.cmd('/nav stop')
+            end
+        else
+            chasing = 0
+        end
         if tlo(function() return mq.TLO.Me.CombatState() end, '') == 'COMBAT' then
             calm = 0
             if mq.gettime() - state.lastHit >= AGGRO_DROP_AFTER_SEC * 1000 then

@@ -1191,6 +1191,7 @@ Sub ClearDungeon
     /declare calm       int   local 0
     /declare fightTimer timer local 0
     /declare quiet      int   local 0
+    /declare chasing    int   local 0
     /declare bailTimer  timer local ${BailMinutes}m
     /declare runTimer   timer local 10s
     /declare runSends   int   local 1
@@ -1245,6 +1246,20 @@ Sub ClearDungeon
     /varset HitSeen FALSE
     :fightloop
         /call PumpEvents
+        | Triune should only be finishing what's on me now. If nothing is on my
+        | extended target list and it's still running somewhere, it's still
+        | pulling (the manual switch didn't take), so pause it.
+        /if (!${Me.XTarget} && ${Navigation.Active}) {
+            /varcalc chasing ${chasing}+1
+            /if (${chasing}==5) {
+                /echo Triune is still pulling after the adventure ended, pausing it.
+                /call DLog "still pulling after the clear (nothing on XTarget, nav active), sending ${PullerOffCmd}"
+                /docommand ${PullerOffCmd}
+                /nav stop
+            }
+        } else {
+            /varset chasing 0
+        }
         /if (${Me.CombatState.Equal[COMBAT]}) {
             /varset calm 0
             /if (${HitSeen}) {
