@@ -959,24 +959,54 @@ local function mapPort()
     end
 end
 
-local function leaveDungeon()
+-- From the dungeon (or anywhere): Bazaar and Back, then the map if needed.
+-- afterClear: called right after a clear. If Bazaar and Back doesn't get me
+-- out, wait for the finished adventure to send me to my bind point (it does
+-- that 30 minutes after the end) and carry on from there.
+local function leaveDungeon(afterClear)
     setStep('Bazaar and Back')
-    waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
-    mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
     local landZone = camp().landZone
-    waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
-    sleep(5000)
-    -- Bazaar and Back can be set to East Commonlands; if it already put us in
-    -- this camp's landing zone, skip the walk to the map
-    if inZone(landZone) then
-        log('Bazaar and Back put me in %s, skipping the map.', landZone)
-        return
+    local startZone = zoneShort()
+    local waited = false
+    local function bnb()
+        waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
+        mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
+        waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
+        sleep(5000)
     end
-    -- otherwise use the map there (the Bazaar and East Commonlands both have one)
-    if not inZone('bazaar') and not inZone('ecommons') then
-        fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+    bnb()
+    local tries = 1
+    while true do
+        -- Bazaar and Back can be set to East Commonlands; if it already put us
+        -- in this camp's landing zone, skip the walk to the map
+        if inZone(landZone) then
+            log('In %s, skipping the map.', landZone)
+            return
+        end
+        -- otherwise use the map there (the Bazaar and East Commonlands both have one)
+        if inZone('bazaar') or inZone('ecommons') then
+            mapPort()
+            return
+        end
+        if tries >= 3 or not afterClear then
+            fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+        end
+        if inZone(startZone) and not waited then
+            log("Bazaar and Back didn't get me out. Waiting for the adventure to send me to my bind point (up to 35 minutes).")
+            setStep('Waiting for the bind point recall')
+            waited = true
+            waitFor(35 * 60 * 1000, function() return not inZone(startZone) end)
+            sleep(10000)
+            if inZone(startZone) then fail('Still in %s after 35 minutes. Ending.', startZone) end
+            log('Sent to %s, carrying on from here.', zoneShort())
+        else
+            -- somewhere else (my bind point): try Bazaar and Back again from here
+            startZone = zoneShort()
+            tries = tries + 1
+            setStep('Bazaar and Back')
+            bnb()
+        end
     end
-    mapPort()
 end
 
 -- ============================================================================
@@ -1120,7 +1150,7 @@ local function adventureLoop()
                 state.campKey = nextInRotation(state.campKey)
                 log('Next camp: [%s].', state.campKey)
             end
-            leaveDungeon()
+            leaveDungeon(true)
             returnToCamp()
             state.runs = state.runs + 1
             log('Finished run #%d', state.runs)

@@ -265,7 +265,7 @@ Sub Main(string a1, string a2, string a3, string a4)
             /echo Next camp: [${NextCamp}].
             /call SwitchCamp ${NextCamp}
         }
-        /call LeaveDungeon
+        /call LeaveDungeon after
         /call ReturnToCamp
         /varcalc Runs ${Runs}+1
         /echo Finished run #${Runs}
@@ -1349,26 +1349,55 @@ Sub DropAggro
 /return
 
 | ---------------------------------------------------------
-Sub LeaveDungeon
+| From the dungeon (or anywhere): Bazaar and Back, then the map if needed.
+| how = after: called right after a clear. If Bazaar and Back doesn't get me
+| out, wait for the finished adventure to send me to my bind point (it does
+| that 30 minutes after the end) and carry on from there.
+Sub LeaveDungeon(string how)
     /declare startZone string local ${Zone.ShortName}
+    /declare tries     int    local 0
+    /declare waited    bool   local FALSE
 
+    :bnb
+    /varcalc tries ${tries}+1
     | Bazaar AA
     /delay 3m ${Me.AltAbilityReady[${BazaarAAID}]}
     /alt activate ${BazaarAAID}
     /delay 60s (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[ecommons]} || ${Zone.ShortName.Equal[${LandZone}]})
     /delay 5s
+
+    :check
     | Bazaar and Back can be set to East Commonlands; if it already put us in
     | this camp's landing zone, skip the walk to the map
     /if (${Zone.ShortName.Equal[${LandZone}]}) {
-        /echo Bazaar and Back put me in ${LandZone}, skipping the map.
+        /echo In ${LandZone}, skipping the map.
         /return
     }
     | otherwise use the map there (the Bazaar and East Commonlands both have one)
-    /if (${Zone.ShortName.NotEqual[bazaar]} && ${Zone.ShortName.NotEqual[ecommons]}) {
+    /if (${Zone.ShortName.Equal[bazaar]} || ${Zone.ShortName.Equal[ecommons]}) {
+        /call MapPort
+        /return
+    }
+    /if (${tries}>=3 || !${Defined[how]} || ${how.NotEqual[after]}) {
         /echo Bazaar and Back didn't take me to the Bazaar, East Commonlands or ${LandZone}. Ending.
         /endmacro
     }
-    /call MapPort
+    /if (${Zone.ShortName.Equal[${startZone}]} && !${waited}) {
+        /echo Bazaar and Back didn't get me out. Waiting for the adventure to send me to my bind point (up to 35 minutes).
+        /call DLog "Bazaar and Back failed in ${startZone}, waiting for the bind point recall"
+        /varset waited TRUE
+        /delay 35m ${Zone.ShortName.NotEqual[${startZone}]}
+        /delay 10s
+        /if (${Zone.ShortName.Equal[${startZone}]}) {
+            /echo Still in ${startZone} after 35 minutes. Ending.
+            /endmacro
+        }
+        /echo Sent to ${Zone.ShortName}, carrying on from here.
+        /goto :check
+    }
+    | somewhere else (my bind point): try Bazaar and Back again from here
+    /varset startZone ${Zone.ShortName}
+    /goto :bnb
 /return
 
 | ---------------------------------------------------------
