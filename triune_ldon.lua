@@ -70,10 +70,10 @@ local AGGRO_DROP_AFTER_SEC = 30
 -- giving up on the adventure (stuck on a mob or a mesh trap)
 local BAIL_AFTER_MIN = 5
 
--- Adventures to turn down (the Everfrost meshes can't handle these): if the
+-- Adventures to turn down (Everfrost and Guk mesh trouble): if the
 -- offer text names one, decline it and request again, as many times as it
 -- takes. Only a real request error moves on to another camp.
-local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den' }
+local AVOID_DUNGEONS = { 'Maw of the Menagerie', 'Spider Den', 'Root Garden', 'Drowning Crypt' }
 local AGGRO_DROP_LIST = { 'Fading Memories', 'Imitate Death', 'Death Peace', 'Escape', 'Feign Death' }
 
 -- "Bazaar and Back" AA, and the map switch in the Bazaar
@@ -145,9 +145,16 @@ local CAMPS = {
         magusSay  = 'Butcherblock',
         questNPC  = 'Xyzelauna',
         -- Ent1 (switch 7) is the crypt entrance, Ent2 (switch 10) is the grave entrance.
-        ent1      = { zone = 'lfaydark', path = { 'gfaydark', 'lfaydark' }, y = -759.1, x = 3832.8, z = 2.5, door = 7 },
+        ent1      = { zone = 'lfaydark', path = { 'lfaydark' }, y = -759.1, x = 3832.8, z = 2.5, door = 7 },
         ent2Names = { 'grave' },
-        ent2      = { zone = 'lfaydark', path = { 'gfaydark', 'lfaydark' }, y = -111.0, x = 3861.8, z = -39.6, door = 10 },
+        ent2      = { zone = 'lfaydark', path = { 'lfaydark' }, y = -111.0, x = 3861.8, z = -39.6, door = 10 },
+        -- Out trip: the Magus here ports to East Commonlands, the map there goes
+        -- to Castle of Mistmoore (Faydwer), then run out of Mistmoore into
+        -- Lesser Faydark. Both entrances use it.
+        -- Old out trip: remove magus and outMap, and set both paths to
+        -- { 'gfaydark', 'lfaydark' }.
+        magus     = { say = 'East Commonlands', name = 'Magus' },
+        outMap    = { continent = 2, waypoint = 'Castle of Mistmoore', zone = 'mistmoore' },
         map        = { continent = 1, waypoint = 'East Commonlands' },
         landZone   = 'ecommons',
         returnPath = {},
@@ -213,6 +220,9 @@ local ROUTES = {
         { -1864.33, 954.29 }, { -1886.70, 952.09 } } },
     oasis_to_sro = { zone = 'oasis', heading = 178.72, lastZ = 6.15, points = {
         { -1895.63, 201.02 }, { -1903.72, 201.22 } } },
+    -- from raidrec [mistmoore]: map arrival, then straight south out the front
+    mistmoore_to_lfaydark = { zone = 'mistmoore', heading = 180, lastZ = -178.17, points = {
+        { -294.00, 122.00 }, { -336.76, 123.04 } } },
     gfaydark_to_lfaydark = { zone = 'gfaydark', heading = 169.77, lastZ = 3.75, points = {
         { -2475.47, -983.32 }, { -2508.90, -1011.15 }, { -2544.38, -1033.92 },
         { -2577.02, -1061.64 }, { -2595.93, -1098.98 }, { -2626.51, -1109.55 } } },
@@ -241,11 +251,24 @@ local state = {
     log = {},
 }
 
+-- Debug log file (config\triune_ldon_debug.log): everything the window log
+-- shows plus every chat line that mentions an adventure
+local function dlog(fmt, ...)
+    local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
+    local f = io.open(mq.configDir .. '/triune_ldon_debug.log', 'a')
+    if f then
+        f:write(string.format('%s run#%d [%s] %s: %s\n', os.date('%Y-%m-%d %H:%M:%S'), state.runs,
+            tostring(state.campKey or settings.camp), tostring(mq.TLO.Zone.ShortName() or '?'), msg))
+        f:close()
+    end
+end
+
 local function log(fmt, ...)
     local msg = select('#', ...) > 0 and string.format(fmt, ...) or fmt
     print(TAG .. msg)
     table.insert(state.log, os.date('%H:%M:%S') .. '  ' .. msg)
     while #state.log > 60 do table.remove(state.log, 1) end
+    dlog('%s', msg)
 end
 
 local function setStep(fmt, ...)
@@ -789,6 +812,7 @@ end
 local function clearDungeon()
     state.advWon = false
     setStep('Clearing dungeon (TAC puller)')
+    dlog('clear start, sending %s and %s', PULLER_MODE_CMD, PULLER_ON_CMD)
     mq.cmd(PULLER_MODE_CMD)
     sleep(1000)
     mq.cmd(PULLER_ON_CMD)
@@ -819,7 +843,10 @@ local function clearDungeon()
         log('No hits for %d minutes (stuck?), giving up on this adventure.', BAIL_AFTER_MIN)
     elseif not state.advWon then
         log('Timed out without a win message, leaving anyway.')
+    else
+        log("Adventure complete, switching Triune to manual to finish what's on me.")
     end
+    dlog('clear loop done: won=%s bailed=%s, sending %s', tostring(state.advWon), tostring(state.bailed), PULLER_MANUAL_CMD)
 
     -- stop pulling, but keep fighting whatever is still on me
     setStep('Finishing combat')
@@ -831,7 +858,21 @@ local function clearDungeon()
     local calm = 0
     local deadline = mq.gettime() + 10 * 60 * 1000
     state.lastHit = mq.gettime()
+    local chasing = 0
     while calm < 5 and mq.gettime() < deadline do
+        -- Triune should only be finishing what's on me now. If nothing is on
+        -- my extended target list and it's still running somewhere, it's
+        -- still pulling (the manual switch didn't take), so pause it.
+        if tlo(function() return mq.TLO.Me.XTarget() end, 0) == 0 and navActive() then
+            chasing = chasing + 1
+            if chasing == 5 then
+                log('Triune is still pulling after the adventure ended, pausing it.')
+                mq.cmd(PULLER_OFF_CMD)
+                mq.cmd('/nav stop')
+            end
+        else
+            chasing = 0
+        end
         if tlo(function() return mq.TLO.Me.CombatState() end, '') == 'COMBAT' then
             calm = 0
             if mq.gettime() - state.lastHit >= AGGRO_DROP_AFTER_SEC * 1000 then
@@ -848,17 +889,18 @@ local function clearDungeon()
         fail("Still in combat 10 minutes after the adventure ended. Ending here so I don't port out mid-fight.")
     end
 
+    dlog('out of combat, sending %s', PULLER_OFF_CMD)
     mq.cmd(PULLER_OFF_CMD)
     sleep(2000)
 end
 
 -- In the Bazaar: walk to the map and port to this camp's waypoint
-local function mapPort()
+local function mapPort(map, landZone)
     -- the map in East Commonlands is the same, just somewhere else
     local hub = zoneShort()
     local my, mx, mz = MAP_Y, MAP_X, MAP_Z
     if hub == 'ecommons' then my, mx, mz = EC_MAP_Y, EC_MAP_X, EC_MAP_Z end
-    local c = camp()
+    local c = { map = map or camp().map, landZone = landZone or camp().landZone }
     setStep('Bazaar map to %s', c.map.waypoint)
 
     -- Walk to the map. The landing spot is random, so try nav, and if it
@@ -927,24 +969,54 @@ local function mapPort()
     end
 end
 
-local function leaveDungeon()
+-- From the dungeon (or anywhere): Bazaar and Back, then the map if needed.
+-- afterClear: called right after a clear. If Bazaar and Back doesn't get me
+-- out, wait for the finished adventure to send me to my bind point (it does
+-- that 30 minutes after the end) and carry on from there.
+local function leaveDungeon(afterClear)
     setStep('Bazaar and Back')
-    waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
-    mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
     local landZone = camp().landZone
-    waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
-    sleep(5000)
-    -- Bazaar and Back can be set to East Commonlands; if it already put us in
-    -- this camp's landing zone, skip the walk to the map
-    if inZone(landZone) then
-        log('Bazaar and Back put me in %s, skipping the map.', landZone)
-        return
+    local startZone = zoneShort()
+    local waited = false
+    local function bnb()
+        waitFor(3 * 60 * 1000, function() return mq.TLO.Me.AltAbilityReady(BAZAAR_AA_ID)() end)
+        mq.cmdf('/alt activate %d', BAZAAR_AA_ID)
+        waitFor(60000, function() return inZone('bazaar') or inZone('ecommons') or inZone(landZone) end)
+        sleep(5000)
     end
-    -- otherwise use the map there (the Bazaar and East Commonlands both have one)
-    if not inZone('bazaar') and not inZone('ecommons') then
-        fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+    bnb()
+    local tries = 1
+    while true do
+        -- Bazaar and Back can be set to East Commonlands; if it already put us
+        -- in this camp's landing zone, skip the walk to the map
+        if inZone(landZone) then
+            log('In %s, skipping the map.', landZone)
+            return
+        end
+        -- otherwise use the map there (the Bazaar and East Commonlands both have one)
+        if inZone('bazaar') or inZone('ecommons') then
+            mapPort()
+            return
+        end
+        if tries >= 3 or not afterClear then
+            fail("Bazaar and Back didn't take me to the Bazaar, East Commonlands or %s. Ending.", landZone)
+        end
+        if inZone(startZone) and not waited then
+            log("Bazaar and Back didn't get me out. Waiting for the adventure to send me to my bind point (up to 35 minutes).")
+            setStep('Waiting for the bind point recall')
+            waited = true
+            waitFor(35 * 60 * 1000, function() return not inZone(startZone) end)
+            sleep(10000)
+            if inZone(startZone) then fail('Still in %s after 35 minutes. Ending.', startZone) end
+            log('Sent to %s, carrying on from here.', zoneShort())
+        else
+            -- somewhere else (my bind point): try Bazaar and Back again from here
+            startZone = zoneShort()
+            tries = tries + 1
+            setStep('Bazaar and Back')
+            bnb()
+        end
     end
-    mapPort()
 end
 
 -- ============================================================================
@@ -968,8 +1040,15 @@ local function preflight()
     end
     local missing = 0
     -- with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
-    if not c.magus then missing = missing + checkPath(c.campZone, c.ent1.path) end
-    if c.ent2 then missing = missing + checkPath(c.campZone, c.ent2.path) end
+    if c.outMap then
+        -- out trip by Magus + map: the run starts where the map lands
+        missing = missing + checkPath(c.outMap.zone, c.ent1.path)
+        if c.ent2 then missing = missing + checkPath(c.outMap.zone, c.ent2.path) end
+    else
+        -- with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
+        if not c.magus then missing = missing + checkPath(c.campZone, c.ent1.path) end
+        if c.ent2 then missing = missing + checkPath(c.campZone, c.ent2.path) end
+    end
     missing = missing + checkPath(c.landZone, c.returnPath)
     if missing > 0 then fail('%d zone crossing(s) missing for camp [%s]. Ending.', missing, state.campKey) end
 end
@@ -1066,7 +1145,19 @@ local function adventureLoop()
             goToCamp(fallback)
         else
             if c.campSpot then leaveCamp() end
-            if state.useEnt2 then
+            if c.outMap then
+                -- Magus to a zone with a map, then the map, for either entrance
+                if c.magus then useMagus(c.magus) end
+                if not inZone(c.outMap.zone) then
+                    if not inZone('bazaar') and not inZone('ecommons') then
+                        fail("The Magus didn't get me to a map (I'm in %s). Ending.", zoneShort())
+                    end
+                    mapPort({ continent = c.outMap.continent, waypoint = c.outMap.waypoint, row = c.outMap.row },
+                        c.outMap.zone)
+                end
+                setStep('Travelling to entrance')
+                travelPath(state.useEnt2 and c.ent2.path or c.ent1.path)
+            elseif state.useEnt2 then
                 setStep('Travelling to entrance')
                 travelPath(c.ent2.path)
             else
@@ -1088,7 +1179,7 @@ local function adventureLoop()
                 state.campKey = nextInRotation(state.campKey)
                 log('Next camp: [%s].', state.campKey)
             end
-            leaveDungeon()
+            leaveDungeon(true)
             returnToCamp()
             state.runs = state.runs + 1
             log('Finished run #%d', state.runs)
@@ -1147,9 +1238,32 @@ end
 -- ============================================================================
 -- EVENTS
 -- ============================================================================
-mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', function()
-    if state.active then state.advWon = true end
-end)
+-- The client words the end of an adventure several ways (eqstr_us.txt).
+-- Finishing after the time limit, for the lesser reward, gives the "points
+-- for successfully completing" line instead of the usual one. Running out of
+-- time with no reward left also ends it, so leave then too.
+local function onAdvOver(why, msg)
+    return function(line)
+        -- "Complete your adventure goal within N minutes to receive a lesser
+        -- reward": still worth finishing, so keep clearing
+        if tostring(line or ''):lower():find('lesser reward', 1, true) then
+            dlog('out of time, still clearing for the lesser reward')
+            return
+        end
+        if state.active then state.advWon = true end
+        if msg then log(msg) end
+        dlog(why)
+    end
+end
+mq.event('LDoN_AdvWon', '#*#You have successfully completed your adventure#*#', onAdvOver('win message seen'))
+mq.event('LDoN_AdvWon2', '#*#for successfully completing the adventure#*#', onAdvOver('win message seen (late completion)'))
+mq.event('LDoN_AdvWon3', '#*#Your Adventure was a success#*#', onAdvOver('win message seen (adventure was a success)'))
+mq.event('LDoN_AdvFail', '#*#You failed to complete your adventure in time#*#',
+    onAdvOver('adventure failed (out of time)', 'The adventure ran out of time with nothing left to win, leaving.'))
+mq.event('LDoN_AdvFail2', '#*#You have failed your Adventure#*#', onAdvOver('adventure failed', 'The adventure failed, leaving.'))
+-- debug: every chat line that mentions an adventure goes to the debug log,
+-- so a completion message worded differently shows up there
+mq.event('LDoN_AdvAny', '#*#adventure#*#', function(line) dlog('chat: %s', line) end)
 -- any hit landing either way, used to spot a mob stuck on the hate list
 local function onHit() if state.active then state.lastHit = mq.gettime() end end
 mq.event('LDoN_HitOut', '#*#You #*# for #*# point#*# of damage#*#', onHit)
