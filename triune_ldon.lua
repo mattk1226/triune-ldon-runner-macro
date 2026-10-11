@@ -145,9 +145,16 @@ local CAMPS = {
         magusSay  = 'Butcherblock',
         questNPC  = 'Xyzelauna',
         -- Ent1 (switch 7) is the crypt entrance, Ent2 (switch 10) is the grave entrance.
-        ent1      = { zone = 'lfaydark', path = { 'gfaydark', 'lfaydark' }, y = -759.1, x = 3832.8, z = 2.5, door = 7 },
+        ent1      = { zone = 'lfaydark', path = { 'lfaydark' }, y = -759.1, x = 3832.8, z = 2.5, door = 7 },
         ent2Names = { 'grave' },
-        ent2      = { zone = 'lfaydark', path = { 'gfaydark', 'lfaydark' }, y = -111.0, x = 3861.8, z = -39.6, door = 10 },
+        ent2      = { zone = 'lfaydark', path = { 'lfaydark' }, y = -111.0, x = 3861.8, z = -39.6, door = 10 },
+        -- Out trip: the Magus here ports to East Commonlands, the map there goes
+        -- to Castle of Mistmoore (Faydwer), then run out of Mistmoore into
+        -- Lesser Faydark. Both entrances use it.
+        -- Old out trip: remove magus and outMap, and set both paths to
+        -- { 'gfaydark', 'lfaydark' }.
+        magus     = { say = 'East Commonlands', name = 'Magus' },
+        outMap    = { continent = 2, waypoint = 'Castle of Mistmoore', zone = 'mistmoore' },
         map        = { continent = 1, waypoint = 'East Commonlands' },
         landZone   = 'ecommons',
         returnPath = {},
@@ -213,6 +220,9 @@ local ROUTES = {
         { -1864.33, 954.29 }, { -1886.70, 952.09 } } },
     oasis_to_sro = { zone = 'oasis', heading = 178.72, lastZ = 6.15, points = {
         { -1895.63, 201.02 }, { -1903.72, 201.22 } } },
+    -- from raidrec [mistmoore]: map arrival, then straight south out the front
+    mistmoore_to_lfaydark = { zone = 'mistmoore', heading = 180, lastZ = -178.17, points = {
+        { -294.00, 122.00 }, { -336.76, 123.04 } } },
     gfaydark_to_lfaydark = { zone = 'gfaydark', heading = 169.77, lastZ = 3.75, points = {
         { -2475.47, -983.32 }, { -2508.90, -1011.15 }, { -2544.38, -1033.92 },
         { -2577.02, -1061.64 }, { -2595.93, -1098.98 }, { -2626.51, -1109.55 } } },
@@ -885,12 +895,12 @@ local function clearDungeon()
 end
 
 -- In the Bazaar: walk to the map and port to this camp's waypoint
-local function mapPort()
+local function mapPort(map, landZone)
     -- the map in East Commonlands is the same, just somewhere else
     local hub = zoneShort()
     local my, mx, mz = MAP_Y, MAP_X, MAP_Z
     if hub == 'ecommons' then my, mx, mz = EC_MAP_Y, EC_MAP_X, EC_MAP_Z end
-    local c = camp()
+    local c = { map = map or camp().map, landZone = landZone or camp().landZone }
     setStep('Bazaar map to %s', c.map.waypoint)
 
     -- Walk to the map. The landing spot is random, so try nav, and if it
@@ -1030,8 +1040,15 @@ local function preflight()
     end
     local missing = 0
     -- with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
-    if not c.magus then missing = missing + checkPath(c.campZone, c.ent1.path) end
-    if c.ent2 then missing = missing + checkPath(c.campZone, c.ent2.path) end
+    if c.outMap then
+        -- out trip by Magus + map: the run starts where the map lands
+        missing = missing + checkPath(c.outMap.zone, c.ent1.path)
+        if c.ent2 then missing = missing + checkPath(c.outMap.zone, c.ent2.path) end
+    else
+        -- with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
+        if not c.magus then missing = missing + checkPath(c.campZone, c.ent1.path) end
+        if c.ent2 then missing = missing + checkPath(c.campZone, c.ent2.path) end
+    end
     missing = missing + checkPath(c.landZone, c.returnPath)
     if missing > 0 then fail('%d zone crossing(s) missing for camp [%s]. Ending.', missing, state.campKey) end
 end
@@ -1128,7 +1145,19 @@ local function adventureLoop()
             goToCamp(fallback)
         else
             if c.campSpot then leaveCamp() end
-            if state.useEnt2 then
+            if c.outMap then
+                -- Magus to a zone with a map, then the map, for either entrance
+                if c.magus then useMagus(c.magus) end
+                if not inZone(c.outMap.zone) then
+                    if not inZone('bazaar') and not inZone('ecommons') then
+                        fail("The Magus didn't get me to a map (I'm in %s). Ending.", zoneShort())
+                    end
+                    mapPort({ continent = c.outMap.continent, waypoint = c.outMap.waypoint, row = c.outMap.row },
+                        c.outMap.zone)
+                end
+                setStep('Travelling to entrance')
+                travelPath(state.useEnt2 and c.ent2.path or c.ent1.path)
+            elseif state.useEnt2 then
                 setStep('Travelling to entrance')
                 travelPath(c.ent2.path)
             else

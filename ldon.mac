@@ -117,6 +117,12 @@ Sub Main(string a1, string a2, string a3, string a4)
     /declare LandZone     string outer
     /declare ReturnPath   string outer none
     /declare RetMagusSay  string outer none
+    | Out trip by map: after the camp's Magus (MagusSay) ports me to a zone with
+    | a map, take it to this waypoint, landing in OutMapZone
+    /declare OutMapContinent int    outer 0
+    /declare OutMapWaypoint  string outer none
+    /declare OutMapRow       int    outer 0
+    /declare OutMapZone      string outer none
     /declare RetMagusName string outer Magus
     | what to say to a Magus to get to this camp's zone (used to reach a fallback camp)
     /declare CampMagusSay string outer none
@@ -182,8 +188,14 @@ Sub Main(string a1, string a2, string a3, string a4)
         /endmacro
     }
     | with a Magus shortcut the run to the entrance is only a fallback, so don't require its routes
-    /if (${MagusSay.Equal[none]}) /call CheckPath ${CampZone} ${Ent1Path}
-    /if (${Ent2Names.NotEqual[none]}) /call CheckPath ${CampZone} ${Ent2Path}
+    /if (${OutMapZone.NotEqual[none]}) {
+        | out trip by Magus + map: the run starts where the map lands
+        /call CheckPath ${OutMapZone} ${Ent1Path}
+        /if (${Ent2Names.NotEqual[none]}) /call CheckPath ${OutMapZone} ${Ent2Path}
+    } else {
+        /if (${MagusSay.Equal[none]}) /call CheckPath ${CampZone} ${Ent1Path}
+        /if (${Ent2Names.NotEqual[none]}) /call CheckPath ${CampZone} ${Ent2Path}
+    }
     /call CheckPath ${LandZone} ${ReturnPath}
     /if (${Missing}) {
         /echo ${Missing} zone crossing(s) missing for camp [${Camp}]. Ending.
@@ -244,7 +256,16 @@ Sub Main(string a1, string a2, string a3, string a4)
             /goto :mainloop
         }
         /if (${HasCampSpot}) /call LeaveCamp
-        /if (${UseEnt2}) {
+        /if (${OutMapZone.NotEqual[none]}) {
+            | Magus to a zone with a map, then the map, for either entrance
+            /call UseMagus out
+            /call OutMapPort
+            /if (${UseEnt2}) {
+                /call TravelPath ${Ent2Path}
+            } else {
+                /call TravelPath ${Ent1Path}
+            }
+        } else /if (${UseEnt2}) {
             /call TravelPath ${Ent2Path}
         } else {
             /if (${MagusSay.NotEqual[none]}) /call UseMagus out
@@ -401,6 +422,10 @@ Sub SetCamp
     /varset RetMagusSay  none
     /varset RetMagusName Magus
     /varset CampMagusSay none
+    /varset OutMapContinent 0
+    /varset OutMapWaypoint  none
+    /varset OutMapRow       0
+    /varset OutMapZone      none
     /varset HasRetExit   FALSE
     /varset RetExitY     0
     /varset RetExitX     0
@@ -475,7 +500,18 @@ Sub SetCamp
         /varset CampZone     butcher
         /varset QuestNPC     Xyzelauna
         /varset Ent1Zone     lfaydark
-        /varset Ent1Path     gfaydark|lfaydark
+        | Out trip: the Magus here ports to East Commonlands, the map there goes
+        | to Castle of Mistmoore (Faydwer), then run out of Mistmoore into
+        | Lesser Faydark. Both entrances use it.
+        /varset MagusSay        East Commonlands
+        /varset MagusName       Magus
+        /varset OutMapContinent 2
+        /varset OutMapWaypoint  Castle of Mistmoore
+        /varset OutMapZone      mistmoore
+        /varset Ent1Path     lfaydark
+        | Old out trip, running Butcherblock -> Greater Faydark -> Lesser Faydark:
+        | put a | in front of the six lines above (MagusSay to OutMapZone) and set
+        | Ent1Path and Ent2Path to gfaydark|lfaydark
         /varset Ent1Y        -759.1
         /varset Ent1X        3832.8
         /varset Ent1Z        2.5
@@ -484,7 +520,7 @@ Sub SetCamp
         | The adventure text says which one to use.
         /varset Ent2Names    grave
         /varset Ent2Zone     lfaydark
-        /varset Ent2Path     gfaydark|lfaydark
+        /varset Ent2Path     lfaydark
         /varset Ent2Y        -111.0
         /varset Ent2X        3861.8
         /varset Ent2Z        -39.6
@@ -755,6 +791,18 @@ Sub BuiltInRoute(string route)
         /varset RCount   2
         /varset RP[1] -1895.63 201.02
         /varset RP[2] -1903.72 201.22
+        /varset RBuiltIn TRUE
+        /return
+    }
+    /if (${route.Equal[mistmoore_to_lfaydark]}) {
+        | from raidrec [mistmoore]: map arrival, then straight south out the front
+        /varset RZone    mistmoore
+        /varset RZoned   1
+        /varset RHeading 180
+        /varset RLastZ   -178.17
+        /varset RCount   2
+        /varset RP[1] -294.00 122.00
+        /varset RP[2] -336.76 123.04
         /varset RBuiltIn TRUE
         /return
     }
@@ -1346,6 +1394,30 @@ Sub DropAggro
     /delay 2s
     | feign death abilities leave me on the floor
     /if (${Me.Feigning}) /stand
+/return
+
+| ---------------------------------------------------------
+| Out trip by map: from the zone the camp's Magus put me in, take the map to
+| OutMapWaypoint (lands in OutMapZone)
+Sub OutMapPort
+    /declare c   int    local ${MapContinent}
+    /declare w   string local ${MapWaypoint}
+    /declare r   int    local ${MapRow}
+    /declare lz  string local ${LandZone}
+    /if (${Zone.ShortName.Equal[${OutMapZone}]}) /return
+    /if (${Zone.ShortName.NotEqual[bazaar]} && ${Zone.ShortName.NotEqual[ecommons]}) {
+        /echo The Magus didn't get me to a map (I'm in ${Zone.ShortName}). Ending.
+        /endmacro
+    }
+    /varset MapContinent ${OutMapContinent}
+    /varset MapWaypoint  ${OutMapWaypoint}
+    /varset MapRow       ${OutMapRow}
+    /varset LandZone     ${OutMapZone}
+    /call MapPort
+    /varset MapContinent ${c}
+    /varset MapWaypoint  ${w}
+    /varset MapRow       ${r}
+    /varset LandZone     ${lz}
 /return
 
 | ---------------------------------------------------------
